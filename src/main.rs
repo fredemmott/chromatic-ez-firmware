@@ -3,6 +3,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use nusb::MaybeFuture;
 use url::Url;
 
 const COLOR_RESET: &str = "\x1b[0m";
@@ -65,8 +66,18 @@ const FW_FREDEMMOTT_FS: RemoteFirmwareResource = RemoteFirmwareResource {
 
 const FW_OPTIONS: &[RemoteFirmwareResource] = &[FW_FREDEMMOTT_FS, FW_MODRETRO_FS];
 
+fn wait_for_exit() {
+    println!("Press enter to exit.");
+    std::io::stdin().read_line(&mut String::new()).unwrap();
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_ansi_support();
+
+    if !have_single_chromatic_target()? {
+        wait_for_exit();
+        return Ok(());
+    }
 
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
     println!("{COLOR_YELLOW} Select Firmware Option:{COLOR_RESET}");
@@ -104,6 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     if !loader_ok || !fw_ok {
         eprintln!("\n{COLOR_RED}Hash verification failed. Aborting execution.{COLOR_RESET}");
+        wait_for_exit();
         return Ok(());
     }
 
@@ -122,7 +134,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let confirm = confirm.trim().to_lowercase();
 
     if confirm != "y" && confirm != "yes" {
-        println!("{COLOR_YELLOW}Operation cancelled by user.{COLOR_RESET}");
         return Ok(());
     }
 
@@ -143,7 +154,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\n{COLOR_RED}openFPGALoader failed with status: {status}{COLOR_RESET}");
     }
 
+    wait_for_exit();
     Ok(())
+}
+
+fn have_single_chromatic_target() -> Result<bool, Box<dyn std::error::Error>> {
+    let devices : Vec<_> = nusb::list_devices().wait()?.collect();
+
+    let chromatics = devices.iter().filter(|device| {
+       device.vendor_id() == 0x374E && device.product_id() == 0x0101
+    }).count();
+    if chromatics == 0 {
+        println!("{COLOR_RED}No Chromatics were found via USB. Is your console plugged in?{COLOR_RESET}");
+        return Ok(false);
+    }
+    if chromatics != 1 {
+        println!("{COLOR_RED}Found {} Chromatic devices, required exactly 1.{COLOR_RESET}", chromatics);
+        return Ok(false);
+    }
+
+
+    let fpga_interfaces = devices.iter().filter(|device| {
+        // GoWin GWU2X (programming interface for GoWin GW5A-25A)
+        device.vendor_id() == 0x33AA && device.product_id() == 0x0120
+    }).count();
+    if fpga_interfaces != 1 {
+        println!("{COLOR_RED}Found {} GoWin FPGA interfaces, required exactly 1.{COLOR_RESET}", fpga_interfaces);
+        return Ok(false);
+    }
+    println!("{COLOR_GREEN}Found 1 Chromatic device and 1 GoWin FPGA interface.{COLOR_RESET}");
+    Ok(true)
 }
 
 fn fetch_resource(url_str: &str, dest: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
