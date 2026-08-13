@@ -1,0 +1,239 @@
+use sha2::{Digest, Sha256};
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use url::Url;
+
+const COLOR_RESET: &str = "\x1b[0m";
+const COLOR_RED: &str = "\x1b[31;1m";
+const COLOR_GREEN: &str = "\x1b[32;1m";
+const COLOR_YELLOW: &str = "\x1b[33;1m";
+const COLOR_CYAN: &str = "\x1b[36;1m";
+const COLOR_GRAY: &str = "\x1b[37;1m";
+
+struct RemoteResource {
+    filename_prefix: &'static str,
+    extension: &'static str,
+    url: &'static str,
+    sha256: &'static str,
+}
+
+impl RemoteResource {
+    fn local_filename(&self) -> String {
+        format!("{}-{}.{}", self.filename_prefix, &self.sha256[..8], self.extension)
+    }
+}
+
+struct RemoteFirmwareResource {
+    resource: RemoteResource,
+    title: &'static str,
+    version: &'static str,
+    description: &'static str,
+}
+
+const OPENFPGALOADER_EXE: RemoteResource = RemoteResource {
+    filename_prefix: "openFPGALoader",
+    extension: "exe",
+    url: "file:///D:/openFPGALoader/cmake-build-smol/RelWithDebInfo/openFPGALoader.exe",
+    sha256: "c54607be48c8811caeda2256b315db2c43b187b40d5402ac061b066819438221",
+};
+
+const FW_MODRETRO_FS: RemoteFirmwareResource = RemoteFirmwareResource {
+    resource: RemoteResource {
+        filename_prefix: "fw_modretro",
+        extension: "fs",
+        url: "https://github.com/ModRetro/oss-chromatic-console-fpga/releases/download/v18.8/v18.8_20251224.fs",
+        sha256: "7f5c7811d260f850dfba408178748a5c1aab803f7419bcb34adde70395a7a8af",
+    },
+    title: "ModRetro",
+    version: "v18.8",
+    description: "The original firmware for Chromatic. This firmware can not be used with FlashGBX.",
+};
+
+const FW_FREDEMMOTT_FS: RemoteFirmwareResource = RemoteFirmwareResource {
+    resource: RemoteResource {
+        filename_prefix: "fw_fredemmott",
+        extension: "fs",
+        url: "file:///D:/chromatic_fpga/esp32t/impl/pnr/evt1_x2.fs",
+        sha256: "748b669ffd3a6402cb183046b4f899fb7e09246eebe910ed593b002aeb15f8b8",
+    },
+    title: "fredemmott/chromatic_dumper",
+    version: "v2026.06.03.1 (based on ModRetro v18.8)",
+    description: "ModRetro's firmware, modified to support FlashGBX.",
+};
+
+const FW_OPTIONS: &[RemoteFirmwareResource] = &[FW_FREDEMMOTT_FS, FW_MODRETRO_FS];
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    enable_ansi_support();
+
+    println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
+    println!("{COLOR_YELLOW} Select Firmware Option:{COLOR_RESET}");
+    println!("{COLOR_YELLOW}=========================================={COLOR_RESET}\n");
+
+    for (i, fw) in FW_OPTIONS.iter().enumerate() {
+        println!("{COLOR_GREEN}{}{COLOR_RESET}) {} {}", i + 1, fw.title, fw.version);
+        println!("   {COLOR_GRAY}{}{COLOR_RESET}\n", fw.description);
+    }
+
+    let selected_fw = loop {
+        print!("Enter choice ({COLOR_GREEN}1{COLOR_RESET}-{COLOR_GREEN}{}{COLOR_RESET}): ", FW_OPTIONS.len());
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+
+        if let Ok(choice) = input.trim().parse::<usize>() {
+            if choice >= 1 && choice <= FW_OPTIONS.len() {
+                break &FW_OPTIONS[choice - 1];
+            }
+        }
+        println!("Invalid selection, please try again.");
+    };
+
+    let temp_dir = std::env::temp_dir().join("chromatic_flasher");
+    fs::create_dir_all(&temp_dir)?;
+
+    let loader_path = temp_dir.join(OPENFPGALOADER_EXE.local_filename());
+    let fw_path = temp_dir.join(selected_fw.resource.local_filename());
+
+    let loader_ok = ensure_available(OPENFPGALOADER_EXE.url, OPENFPGALOADER_EXE.sha256, &loader_path, "openFPGALoader")?;
+    let fw_ok = ensure_available(selected_fw.resource.url, selected_fw.resource.sha256, &fw_path, selected_fw.title)?;
+
+    println!();
+    if !loader_ok || !fw_ok {
+        eprintln!("\n{COLOR_RED}Hash verification failed. Aborting execution.{COLOR_RESET}");
+        return Ok(());
+    }
+
+    println!("\n{COLOR_YELLOW}=========================================={COLOR_RESET}");
+    println!("{COLOR_YELLOW} Ready to Flash{COLOR_RESET}");
+    println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
+    println!("ID:       {} {}", selected_fw.title, selected_fw.version);
+    println!("Tool:     {}", loader_path.display());
+    println!("Firmware: {}", fw_path.display());
+
+    print!("\nDo you want to proceed with flashing? ({COLOR_RED}y{COLOR_RESET}/{COLOR_GREEN}N{COLOR_RESET}): ");
+    io::stdout().flush()?;
+
+    let mut confirm = String::new();
+    io::stdin().read_line(&mut confirm)?;
+    let confirm = confirm.trim().to_lowercase();
+
+    if confirm != "y" && confirm != "yes" {
+        println!("{COLOR_YELLOW}Operation cancelled by user.{COLOR_RESET}");
+        return Ok(());
+    }
+
+    // 5. Execute openFPGALoader passing the firmware path
+    println!("\n{COLOR_GREEN}Executing openFPGALoader...{COLOR_RESET}\n");
+
+    let status = Command::new(&loader_path)
+        .args(&[
+            "--cable", "gwu2x",
+            "--write-flash",
+            "--reset"])
+        .arg(&fw_path)
+        .status()?;
+
+    if status.success() {
+        println!("\n{COLOR_GREEN}Update finished successfully.{COLOR_RESET}");
+    } else {
+        println!("\n{COLOR_RED}openFPGALoader failed with status: {status}{COLOR_RESET}");
+    }
+
+    Ok(())
+}
+
+fn fetch_resource(url_str: &str, dest: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let url = Url::parse(url_str)?;
+
+    if url.scheme() == "file" {
+        let local_path = url
+            .to_file_path()
+            .map_err(|_| "Failed to convert file:// URL to local path")?;
+        if !local_path.exists() {
+            return Err(format!("Local file not found: {}", local_path.display()).into());
+        }
+        fs::copy(&local_path, dest)?;
+    } else {
+        let response = reqwest::blocking::get(url_str)?;
+        let mut file = File::create(dest)?;
+        let content = response.bytes()?;
+        file.write_all(&content)?;
+    }
+    Ok(())
+}
+
+fn ensure_available(url: &str, hash: &str, path: &PathBuf, title: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    if path.exists() {
+        if verify_hash(path, hash)? {
+            return Ok(true);
+        }
+
+        println!("\n{COLOR_RED}Incorrect hash, removing {}...{COLOR_RESET}", path.display());
+        fs::remove_file(path)?;
+    }
+
+    println!("\n{COLOR_CYAN}Fetching {title}...{COLOR_RESET}");
+    println!("    {COLOR_GRAY}{url}{COLOR_RESET}");
+    fetch_resource(url, path)?;
+    Ok(verify_hash(path, hash)?)
+}
+
+
+fn verify_hash(file_path: &Path, expected_hash: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    let file_name = file_path.file_name().unwrap().to_string_lossy();
+    println!("{COLOR_CYAN}Verifying hash for {file_name}...{COLOR_RESET}");
+
+    let mut file = File::open(file_path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+
+    let actual_hash = hex::encode(hasher.finalize());
+
+    if actual_hash.eq_ignore_ascii_case(expected_hash) {
+        println!("{COLOR_GREEN}Hash verification PASSED.{COLOR_RESET}");
+        Ok(true)
+    } else {
+        println!("{COLOR_RED}Hash verification FAILED!{COLOR_RESET}");
+        println!("  Expected: {expected_hash}");
+        println!("  Actual:   {actual_hash}");
+        Ok(false)
+    }
+}
+
+/// Set `VIRTUAL_TERMINAL_PROCESSING` for compatibility with classic Windows cmd.exe; unneeded
+/// but harmless on modern Windows Terminal
+#[cfg(target_os = "windows")]
+fn enable_ansi_support() {
+    use std::os::windows::io::AsRawHandle;
+    type HANDLE = *mut std::ffi::c_void;
+
+    extern "system" {
+        fn GetConsoleMode(handle: HANDLE, mode_pointer: *mut u32) -> i32;
+        fn SetConsoleMode(handle: HANDLE, mode: u32) -> i32;
+    }
+
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+
+    unsafe {
+        let handle = std::io::stdout().as_raw_handle() as HANDLE;
+        let mut mode: u32 = 0;
+        if GetConsoleMode(handle, &mut mode) != 0 {
+            SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn enable_ansi_support() {}
