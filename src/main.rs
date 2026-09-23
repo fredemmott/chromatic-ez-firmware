@@ -1,10 +1,26 @@
 use sha2::{Digest, Sha256};
+use std::ffi::{c_char, c_int};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::slice;
 use nusb::MaybeFuture;
 use url::Url;
+
+pub type PAPIProgressCallback = Option<unsafe extern "C" fn(usize, usize)>;
+pub type PAPIStringCallback = Option<unsafe extern "C" fn(*const c_char, u16)>;
+
+extern "C" {
+    pub fn papi_fpga_program_sram(
+        path: *const c_char,
+        path_len: usize,
+        message_callback: PAPIStringCallback,
+        error_callback: PAPIStringCallback,
+        progress_callback: PAPIProgressCallback,
+    ) -> c_int;
+
+    pub fn papi_fpga_reset() -> c_int;
+}
 
 const COLOR_RESET: &str = "\x1b[0m";
 const COLOR_RED: &str = "\x1b[31;1m";
@@ -12,6 +28,19 @@ const COLOR_GREEN: &str = "\x1b[32;1m";
 const COLOR_YELLOW: &str = "\x1b[33;1m";
 const COLOR_CYAN: &str = "\x1b[36;1m";
 const COLOR_GRAY: &str = "\x1b[37;1m";
+
+unsafe extern "C" fn on_loader_message(msg: *const c_char, msg_len: u16) {
+    let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
+    let s = std::str::from_utf8_unchecked(bytes);
+    println!("{s}");
+
+}
+unsafe extern "C" fn on_loader_error(msg: *const c_char, msg_len: u16) {
+    let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
+    let s = std::str::from_utf8_unchecked(bytes);
+    println!("{COLOR_RED}{s}{COLOR_RESET}");
+}
+unsafe extern "C" fn on_loader_progress(progress: usize, total: usize) {}
 
 struct RemoteResource {
     filename_prefix: &'static str,
@@ -32,13 +61,6 @@ struct RemoteFirmwareResource {
     version: &'static str,
     description: &'static str,
 }
-
-const OPENFPGALOADER_EXE: RemoteResource = RemoteResource {
-    filename_prefix: "openFPGALoader",
-    extension: "exe",
-    url: "file:///D:/openFPGALoader/cmake-build-smol/RelWithDebInfo/openFPGALoader.exe",
-    sha256: "c54607be48c8811caeda2256b315db2c43b187b40d5402ac061b066819438221",
-};
 
 const FW_MODRETRO_FS: RemoteFirmwareResource = RemoteFirmwareResource {
     resource: RemoteResource {
@@ -106,14 +128,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = std::env::temp_dir().join("chromatic_flasher");
     fs::create_dir_all(&temp_dir)?;
 
-    let loader_path = temp_dir.join(OPENFPGALOADER_EXE.local_filename());
     let fw_path = temp_dir.join(selected_fw.resource.local_filename());
 
-    let loader_ok = ensure_available(OPENFPGALOADER_EXE.url, OPENFPGALOADER_EXE.sha256, &loader_path, "openFPGALoader")?;
     let fw_ok = ensure_available(selected_fw.resource.url, selected_fw.resource.sha256, &fw_path, selected_fw.title)?;
 
     println!();
-    if !loader_ok || !fw_ok {
+    if !fw_ok {
         eprintln!("\n{COLOR_RED}Hash verification failed. Aborting execution.{COLOR_RESET}");
         wait_for_exit();
         return Ok(());
@@ -123,7 +143,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{COLOR_YELLOW} Ready to Flash{COLOR_RESET}");
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
     println!("ID:       {} {}", selected_fw.title, selected_fw.version);
-    println!("Tool:     {}", loader_path.display());
     println!("Firmware: {}", fw_path.display());
 
     print!("\nDo you want to proceed with flashing? ({COLOR_RED}y{COLOR_RESET}/{COLOR_GREEN}N{COLOR_RESET}): ");
@@ -140,18 +159,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. Execute openFPGALoader passing the firmware path
     println!("\n{COLOR_GREEN}Executing openFPGALoader...{COLOR_RESET}\n");
 
-    let status = Command::new(&loader_path)
-        .args(&[
-            "--cable", "gwu2x",
-            "--write-flash",
-            "--reset"])
-        .arg(&fw_path)
-        .status()?;
+    let fw_path_bytes = fw_path.as_os_str().as_encoded_bytes();
 
-    if status.success() {
-        println!("\n{COLOR_GREEN}Update finished successfully.{COLOR_RESET}");
-    } else {
-        println!("\n{COLOR_RED}openFPGALoader failed with status: {status}{COLOR_RESET}");
+    unsafe {
+        let status = papi_fpga_program_sram(
+            fw_path_bytes.as_ptr() as *const c_char,
+            fw_path_bytes.len() as usize,
+            Some(on_loader_message),
+            Some(on_loader_error),
+            Some(on_loader_progress),
+        );
+
+        if status == 1 {
+            println!("\n{COLOR_GREEN}Update finished successfully.{COLOR_RESET}");
+        } else {
+            println!("\n{COLOR_RED}openFPGALoader failed with status: {status}{COLOR_RESET}");
+        }
     }
 
     wait_for_exit();

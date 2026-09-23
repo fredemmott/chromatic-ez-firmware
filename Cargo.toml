@@ -9,3 +9,6 @@ sha2 = "0.10"
 hex = "0.4"
 url = "2.5"
 nusb = "0.2.7"
+
+[build-dependencies]
+cmake = "0.1"
