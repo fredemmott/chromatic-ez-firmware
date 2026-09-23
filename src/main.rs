@@ -1,3 +1,4 @@
+use std::cmp::PartialEq;
 use sha2::{Digest, Sha256};
 use std::ffi::{c_char, c_int};
 use std::fs::{self, File};
@@ -9,6 +10,7 @@ use url::Url;
 use serde::Deserialize;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Mutex;
+use clap::{Parser, arg, ValueEnum};
 
 static C_PROGRESS_BAR: Mutex<Option<ProgressBar>> = Mutex::new(None);
 pub type PAPIProgressCallback = Option<unsafe extern "C" fn(u64)>;
@@ -34,6 +36,10 @@ const COLOR_GREEN: &str = "\x1b[32;1m";
 const COLOR_YELLOW: &str = "\x1b[33;1m";
 const COLOR_CYAN: &str = "\x1b[36;1m";
 const COLOR_GRAY: &str = "\x1b[37;1m";
+
+fn linkify(url: impl std::fmt::Display, label: impl std::fmt::Display) -> String {
+    format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, label)
+}
 
 unsafe extern "C" fn on_loader_message(msg: *const c_char, msg_len: u16) {
     let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
@@ -100,19 +106,32 @@ fn get_firmware_options() -> Vec<Firmware> {
 
 
 fn wait_for_exit() {
-    println!("Press enter to exit.");
+    println!("\nPress enter to exit.");
     std::io::stdin().read_line(&mut String::new()).unwrap();
+}
+
+#[derive(Clone, Debug, ValueEnum, Eq, PartialEq)]
+enum Mode {
+    ProgramFlash,
+    ProgramSRAM,
+    DownloadOnly,
+}
+
+#[derive(Parser, Debug)]
+struct Args {
+    #[arg(short, long, value_enum, default_value_t = Mode::ProgramSRAM)]
+    mode: Mode,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_ansi_support();
+    let fw_options = get_firmware_options();
+    let args = Args::parse();
 
-    if !have_single_chromatic_target()? {
+    if args.mode != Mode::DownloadOnly && !have_single_chromatic_target()? {
         wait_for_exit();
         return Ok(());
     }
-
-    let fw_options = get_firmware_options();
 
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
     println!("{COLOR_YELLOW} Select Firmware Option:{COLOR_RESET}");
@@ -139,6 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let temp_dir = std::env::temp_dir().join("chromatic_flasher");
+    // Linkify
     fs::create_dir_all(&temp_dir)?;
 
     let fw_path = temp_dir.join(selected_fw.fpga_local_filename());
@@ -148,6 +168,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     if !fw_ok {
         eprintln!("\n{COLOR_RED}Hash verification failed. Aborting execution.{COLOR_RESET}");
+        wait_for_exit();
+        return Ok(());
+    }
+
+    if args.mode == Mode::DownloadOnly {
+        println!("Downloaded to {}", linkify(temp_dir.display(), fw_path.display()));
         wait_for_exit();
         return Ok(());
     }
