@@ -2,6 +2,8 @@
 name = "chromatic-ez-flasher"
 version = "0.1.0"
 edition = "2024"
+license = "BSL-1.0"
+authors = ["Fred Emmott <fred@fredemmott.com>"]
 
 [dependencies]
 reqwest = { version = "0.12", features = ["blocking"] }
