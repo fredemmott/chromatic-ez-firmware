@@ -24,6 +24,13 @@ LK_CHROMATIC_EXPORT int papi_fpga_program_sram(
   PAPIStringCallback error_callback,
   PAPIProgressResetCallback progress_reset_callback,
   PAPIProgressCallback progress_callback);
+LK_CHROMATIC_EXPORT int papi_fpga_program_flash(
+  const char* path,
+  size_t path_len,
+  PAPIStringCallback message_callback,
+  PAPIStringCallback error_callback,
+  PAPIProgressResetCallback progress_reset_callback,
+  PAPIProgressCallback progress_callback);
 // 1 on success, 0 on failure
 LK_CHROMATIC_EXPORT int papi_fpga_reset();
 

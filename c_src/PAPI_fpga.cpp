@@ -14,7 +14,7 @@
 namespace {
 
 template<std::invocable<Gowin&> T>
-void fpga_invoke(T&& fn, const std::string& path) {
+void fpga_invoke(T&& fn, const std::string& path, const Device::prog_type_t prog_type) {
   const auto& cable = cable_list.at("gwu2x");
   jtag_pins_conf_t pins_config {};
   Jtag jtag {
@@ -32,7 +32,7 @@ void fpga_invoke(T&& fn, const std::string& path) {
     path,
     /* args.file_type = */ {},
     /* args.mcufw = */ {},
-    Device::prog_type_t::WR_SRAM,
+    prog_type,
     /* args.external_flash = */ false,
     /* args.verify = */ false,
     /* args.verbose = */ 0,
@@ -66,15 +66,20 @@ PAPIProgressCallback gProgressCallback { nullptr };
 PAPIProgressResetCallback gProgressResetCallback {nullptr };
 std::size_t gProgressMax {};
 
-}
+enum class Target {
+    Flash,
+    SRAM,
+};
 
-extern "C" int papi_fpga_program_sram(
+int fpga_program(
+  const Target target,
   const char* const path,
   const size_t path_len,
   const PAPIStringCallback message_callback,
   const PAPIStringCallback error_callback,
   const PAPIProgressResetCallback progress_reset_callback,
-  const PAPIProgressCallback progress_callback)
+  const PAPIProgressCallback progress_callback) {
+
 try {
   gMessageCallback = message_callback;
   gErrorCallback = error_callback;
@@ -93,9 +98,10 @@ try {
 
   fpga_invoke(
     [=](Gowin& fpga) {
-      fpga.program(/* offset = */ 0, /* unprotect_flash = */ false);
+      fpga.program(/* offset = */ 0, /* unprotect_flash = */ 0);
     },
-    {path, path_len}
+    {path, path_len},
+    (target == Target::Flash) ? Device::prog_type_t::WR_FLASH : Device::prog_type_t::WR_SRAM
   );
 
   message("Rebooting...");
@@ -104,9 +110,32 @@ try {
   error_message("uncaught exception in papi_fpga_program_sram(): {}", e.what());
   return 0;
 }
+}
+
+}
+
+extern "C" int papi_fpga_program_sram(
+  const char* const path,
+  const size_t path_len,
+  const PAPIStringCallback message_callback,
+  const PAPIStringCallback error_callback,
+  const PAPIProgressResetCallback progress_reset_callback,
+  const PAPIProgressCallback progress_callback) {
+  return fpga_program(Target::SRAM, path, path_len, message_callback, error_callback, progress_reset_callback, progress_callback);
+}
+
+extern "C" int papi_fpga_program_flash(
+  const char* const path,
+  const size_t path_len,
+  const PAPIStringCallback message_callback,
+  const PAPIStringCallback error_callback,
+  const PAPIProgressResetCallback progress_reset_callback,
+  const PAPIProgressCallback progress_callback) {
+  return fpga_program(Target::Flash, path, path_len, message_callback, error_callback, progress_reset_callback, progress_callback);
+}
 
 int papi_fpga_reset() try {
-  fpga_invoke(&Gowin::reset, {});
+  fpga_invoke(&Gowin::reset, {}, Device::prog_type_t::PRG_NONE);
   return 1;
 } catch (const std::exception& e) {
   error_message("uncaught exception in papi_fpga_reset(): {}", e.what());

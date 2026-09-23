@@ -27,6 +27,15 @@ extern "C" {
         progress_callback: PAPIProgressCallback,
     ) -> c_int;
 
+    pub fn papi_fpga_program_flash(
+        path: *const c_char,
+        path_len: usize,
+        message_callback: PAPIStringCallback,
+        error_callback: PAPIStringCallback,
+        progress_reset_callback: PAPIProgressResetCallback,
+        progress_callback: PAPIProgressCallback,
+    ) -> c_int;
+
     pub fn papi_fpga_reset() -> c_int;
 }
 
@@ -112,15 +121,30 @@ fn wait_for_exit() {
 
 #[derive(Clone, Debug, ValueEnum, Eq, PartialEq)]
 enum Mode {
-    ProgramFlash,
-    ProgramSRAM,
+    WriteFlash,
+    WriteSRAM,
     DownloadOnly,
+}
+
+#[derive(Eq, PartialEq)]
+enum Target {
+    Flash,
+    SRAM,
 }
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long, value_enum, default_value_t = Mode::ProgramSRAM)]
+    #[arg(short, long, value_enum, default_value_t = Mode::WriteFlash)]
     mode: Mode,
+}
+impl Args {
+    fn target(&self) -> Option<Target> {
+        match self.mode {
+            Mode::WriteFlash => Some(Target::Flash),
+            Mode::WriteSRAM => Some(Target::SRAM),
+            Mode::DownloadOnly => None,
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -128,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fw_options = get_firmware_options();
     let args = Args::parse();
 
-    if args.mode != Mode::DownloadOnly && !have_single_chromatic_target()? {
+    if args.target().is_some() && !have_single_chromatic_target()? {
         wait_for_exit();
         return Ok(());
     }
@@ -179,12 +203,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n{COLOR_YELLOW}=========================================={COLOR_RESET}");
-    println!("{COLOR_YELLOW} Ready to Flash{COLOR_RESET}");
+    println!("{COLOR_YELLOW} Ready to Program Firmware {COLOR_RESET}");
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
     println!("ID:       {} {}", selected_fw.title, selected_fw.version);
-    println!("Firmware: {}", fw_path.display());
+    println!("Firmware: {}", linkify(temp_dir.display(), fw_path.display()));
 
-    print!("\nDo you want to proceed with flashing? ({COLOR_RED}y{COLOR_RESET}/{COLOR_GREEN}N{COLOR_RESET}): ");
+    let target = args.target().unwrap();
+    match target {
+        Target::Flash => {
+            println!("\n{COLOR_RED}Writing to FLASH{COLOR_RESET} - if you decide to undo this change, you will need to re-flash the previous firmware.");
+        }
+        Target::SRAM => {
+            println!("\n{COLOR_GREEN}Writing to SRAM{COLOR_RESET} - this firmware change will be undone when you turn off your console.");
+        }
+    }
+
+
+    print!("\nDo you want to proceed? ({COLOR_RED}y{COLOR_RESET}/{COLOR_GREEN}N{COLOR_RESET}): ");
     io::stdout().flush()?;
 
     let mut confirm = String::new();
@@ -201,7 +236,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fw_path_bytes = fw_path.as_os_str().as_encoded_bytes();
 
     unsafe {
-        let status = papi_fpga_program_sram(
+        let flash_fn = match target {
+            Target::Flash => papi_fpga_program_flash,
+            Target::SRAM => papi_fpga_program_sram,
+        };
+        let status = flash_fn(
             fw_path_bytes.as_ptr() as *const c_char,
             fw_path_bytes.len() as usize,
             Some(on_loader_message),
@@ -211,7 +250,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         if status == 1 {
-            println!("\n{COLOR_GREEN}Update finished successfully.{COLOR_RESET}");
+            println!("\n{COLOR_GREEN}Update complete.{COLOR_RESET}");
+            if target == Target::Flash {
+                println!("Rebooting FPGA...");
+                papi_fpga_reset();
+            }
         } else {
             println!("\n{COLOR_RED}openFPGALoader failed with status: {status}{COLOR_RESET}");
         }
