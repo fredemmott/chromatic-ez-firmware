@@ -43,7 +43,6 @@ set_target_properties(
   CXX_STANDARD 23
   CXX_STANDARD_REQUIRED ON
   CXX_EXTENSIONS OFF
-  PREFIX "" # no `lib` prefix on Linux
 )
 
 target_link_libraries(
