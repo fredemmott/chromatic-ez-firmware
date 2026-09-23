@@ -1,5 +1,5 @@
 [package]
-name = "chromatic-firmware-selector"
+name = "chromatic-ez-flasher"
 version = "0.1.0"
 edition = "2024"
 
