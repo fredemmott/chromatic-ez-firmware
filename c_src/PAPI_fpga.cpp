@@ -62,18 +62,9 @@ void error_message(
   gErrorCallback(msg.data(), static_cast<uint16_t>(msg.size()));
 };
 
-void op_message(const std::string_view op) {
-  message("Setting up Chromatic: {}...", op);
-}
-
 PAPIProgressCallback gProgressCallback { nullptr };
+PAPIProgressResetCallback gProgressResetCallback {nullptr };
 std::size_t gProgressMax {};
-void update_progress(const std::size_t value) {
-  if (!gProgressCallback) {
-    return;
-  }
-  gProgressCallback(value, gProgressMax);
-}
 
 }
 
@@ -82,20 +73,23 @@ extern "C" int papi_fpga_program_sram(
   const size_t path_len,
   const PAPIStringCallback message_callback,
   const PAPIStringCallback error_callback,
+  const PAPIProgressResetCallback progress_reset_callback,
   const PAPIProgressCallback progress_callback)
 try {
   gMessageCallback = message_callback;
   gErrorCallback = error_callback;
+  gProgressResetCallback = progress_reset_callback;
   gProgressCallback = progress_callback;
   const struct CallbackGuard {
     ~CallbackGuard() {
       gMessageCallback = nullptr;
       gErrorCallback = nullptr;
+      gProgressResetCallback = nullptr;
       gProgressCallback = nullptr;
     }
   } callbackGuard;
 
-  op_message("Connecting");
+  message("Connecting...");
 
   fpga_invoke(
     [=](Gowin& fpga) {
@@ -104,7 +98,7 @@ try {
     {path, path_len}
   );
 
-  op_message("Rebooting");
+  message("Rebooting...");
   return 1;
 } catch (const std::exception& e) {
   error_message("uncaught exception in papi_fpga_program_sram(): {}", e.what());
@@ -134,16 +128,20 @@ void printSuccess(const std::string &success, bool eol) {
 
 ProgressBar::ProgressBar(const std::string &mess, int maxValue, int progressLen,
                          bool quiet) {
-  op_message(mess);
   gProgressMax = maxValue;
-  update_progress(0);
+  if (gProgressResetCallback) {
+    gProgressResetCallback(mess.data(), mess.size(), maxValue);
+  }
 }
 void ProgressBar::display(int value, char force) {
-  update_progress(value);
+  if (gProgressCallback) {
+    gProgressCallback(value);
+  }
 }
 void ProgressBar::done() {
-  update_progress(std::exchange(gProgressMax, 0));
+  gProgressCallback(std::exchange(gProgressMax, 0));
 }
+
 void ProgressBar::fail() {
   done(); // result code of operation is used
 }

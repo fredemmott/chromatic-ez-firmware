@@ -7,8 +7,12 @@ use std::slice;
 use nusb::MaybeFuture;
 use url::Url;
 use serde::Deserialize;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::sync::Mutex;
 
-pub type PAPIProgressCallback = Option<unsafe extern "C" fn(usize, usize)>;
+static C_PROGRESS_BAR: Mutex<Option<ProgressBar>> = Mutex::new(None);
+pub type PAPIProgressCallback = Option<unsafe extern "C" fn(u64)>;
+pub type PAPIProgressResetCallback = Option<unsafe extern "C" fn(*const c_char, u16, u64)>;
 pub type PAPIStringCallback = Option<unsafe extern "C" fn(*const c_char, u16)>;
 
 extern "C" {
@@ -17,6 +21,7 @@ extern "C" {
         path_len: usize,
         message_callback: PAPIStringCallback,
         error_callback: PAPIStringCallback,
+        progress_reset_callback: PAPIProgressResetCallback,
         progress_callback: PAPIProgressCallback,
     ) -> c_int;
 
@@ -32,16 +37,38 @@ const COLOR_GRAY: &str = "\x1b[37;1m";
 
 unsafe extern "C" fn on_loader_message(msg: *const c_char, msg_len: u16) {
     let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
-    let s = std::str::from_utf8_unchecked(bytes);
+    let s = std::str::from_utf8_unchecked(bytes).to_string();
     println!("{s}");
-
 }
 unsafe extern "C" fn on_loader_error(msg: *const c_char, msg_len: u16) {
     let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
     let s = std::str::from_utf8_unchecked(bytes);
     println!("{COLOR_RED}{s}{COLOR_RESET}");
 }
-unsafe extern "C" fn on_loader_progress(progress: usize, total: usize) {}
+
+unsafe extern "C" fn on_loader_progress_reset(msg: *const c_char, msg_len: u16, max_progress: u64) {
+    let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
+    let s = std::str::from_utf8_unchecked(bytes);
+
+    if let Ok(mut guard) = C_PROGRESS_BAR.lock() {
+        let style = ProgressStyle::default_bar()
+            .template("{msg:.cyan} [{elapsed_precise}] [{wide_bar:.cyan/blue}] ({eta} remaining)")
+            .unwrap()
+            .progress_chars("##-");
+        let pb = ProgressBar::new(max_progress)
+            .with_style(style)
+            .with_message(s.to_string());
+        *guard = Some(pb);
+    }
+}
+
+unsafe extern "C" fn on_loader_progress(progress: u64) {
+    if let Ok(guard) = C_PROGRESS_BAR.lock() {
+        if let Some(pb) = guard.as_ref() {
+            pb.set_position(progress as u64);
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Firmware {
@@ -153,6 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             fw_path_bytes.len() as usize,
             Some(on_loader_message),
             Some(on_loader_error),
+            Some(on_loader_progress_reset),
             Some(on_loader_progress),
         );
 
@@ -207,10 +235,19 @@ fn fetch_resource(url_str: &str, dest: &PathBuf) -> Result<(), Box<dyn std::erro
         }
         fs::copy(&local_path, dest)?;
     } else {
-        let response = reqwest::blocking::get(url_str)?;
+        let mut response = reqwest::blocking::get(url_str)?;
+
+        let size = response.content_length().unwrap_or(0);
+        let pb = ProgressBar::new(size);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")?
+                .progress_chars("##-")
+        );
+
+        let mut reader = pb.wrap_read(&mut response);
         let mut file = File::create(dest)?;
-        let content = response.bytes()?;
-        file.write_all(&content)?;
+        std::io::copy(&mut reader, &mut file)?;
     }
     Ok(())
 }

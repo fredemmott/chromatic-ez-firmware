@@ -13,7 +13,8 @@
 extern "C" {
 
 using PAPIStringCallback = void (*)(const char*, uint16_t);
-using PAPIProgressCallback = void(*)(size_t value, size_t max);
+using PAPIProgressCallback = void(*)(uint64_t value);
+using PAPIProgressResetCallback = void(*)(const char* message, uint16_t message_len, uint64_t max);
 
 // 1 on success, 0 on failure
 LK_CHROMATIC_EXPORT int papi_fpga_program_sram(
@@ -21,6 +22,7 @@ LK_CHROMATIC_EXPORT int papi_fpga_program_sram(
   size_t path_len,
   PAPIStringCallback message_callback,
   PAPIStringCallback error_callback,
+  PAPIProgressResetCallback progress_reset_callback,
   PAPIProgressCallback progress_callback);
 // 1 on success, 0 on failure
 LK_CHROMATIC_EXPORT int papi_fpga_reset();
