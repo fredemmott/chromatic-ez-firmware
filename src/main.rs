@@ -205,11 +205,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let temp_dir = std::env::temp_dir().join("chromatic_flasher");
+    let download_dir = {
+        let this_exe = std::env::current_exe()?;
+        let mut folder_name = this_exe.file_stem().unwrap().to_os_string();
+        folder_name.push("-downloads");
+        std::env::current_dir()?.join(folder_name)
+    };
     // Linkify
-    fs::create_dir_all(&temp_dir)?;
+    fs::create_dir_all(&download_dir)?;
 
-    let fw_path = temp_dir.join(selected_fw.fpga_local_filename());
+    let fw_path = download_dir.join(selected_fw.fpga_local_filename());
 
     let fw_ok = ensure_available(&selected_fw.fpga_url, &selected_fw.fpga_sha256, &fw_path, &selected_fw.title)?;
 
@@ -217,14 +222,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !fw_ok {
         eprintln!(
             "\n{COLOR_RED}Verification failed; you might want to delete {}.{COLOR_RESET}",
-            linkify(temp_dir.display(), fw_path.display())
+            linkify(download_dir.display(), fw_path.display())
         );
         before_exit();
         return Err("Bad Hash".into());
     }
 
     if args.mode == Mode::DownloadOnly {
-        println!("Downloaded to {}", linkify(temp_dir.display(), fw_path.display()));
+        println!("Downloaded to {}", linkify(download_dir.display(), fw_path.display()));
         before_exit();
         return Ok(());
     }
@@ -233,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{COLOR_YELLOW} Ready to Program Firmware {COLOR_RESET}");
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
     println!("ID:       {} {}", selected_fw.title, selected_fw.version);
-    println!("Firmware: {}", linkify(temp_dir.display(), fw_path.display()));
+    println!("Firmware: {}", linkify(download_dir.display(), fw_path.display()));
 
     let target = args.target().unwrap();
     match target {
