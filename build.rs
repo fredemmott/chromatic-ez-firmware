@@ -13,10 +13,11 @@ fn main() {
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-lib=static=openFPGAloader-chromatic");
     println!("cargo:rustc-link-lib=static=openFPGAloader");
-    println!("cargo:rustc-link-lib=static=usb-1.0");
 
     #[cfg(target_env="msvc")]
     {
+        println!("cargo:rustc-link-lib=static=libusb-1.0");
+
         let profile = std::env::var("PROFILE").unwrap_or_default();
         if profile == "debug" {
             println!("cargo:rustc-link-lib=libucrtd");
@@ -26,7 +27,11 @@ fn main() {
         }
     }
     #[cfg(target_vendor="apple")]
-    println!("cargo:rustc-link-lib=c++");
+    {
+
+        println!("cargo:rustc-link-lib=static=usb-1.0");
+        println!("cargo:rustc-link-lib=c++");
+    }
 
     println!("cargo:rerun-if-changed=c_src");
 }
