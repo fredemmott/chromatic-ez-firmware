@@ -215,9 +215,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
     if !fw_ok {
-        eprintln!("\n{COLOR_RED}Hash verification failed. Aborting execution.{COLOR_RESET}");
+        eprintln!(
+            "\n{COLOR_RED}Verification failed; you might want to delete {}.{COLOR_RESET}",
+            linkify(temp_dir.display(), fw_path.display())
+        );
         before_exit();
-        return Ok(());
+        return Err("Bad Hash".into());
     }
 
     if args.mode == Mode::DownloadOnly {
@@ -385,10 +388,10 @@ fn verify_hash(file_path: &Path, expected_hash: &str) -> Result<bool, Box<dyn st
     let actual_hash = hex::encode(hasher.finalize());
 
     if actual_hash.eq_ignore_ascii_case(expected_hash) {
-        println!("{COLOR_GREEN}Hash verification PASSED.{COLOR_RESET}");
+        println!("{COLOR_GREEN}Verification OK.{COLOR_RESET}");
         Ok(true)
     } else {
-        println!("{COLOR_RED}Hash verification FAILED!{COLOR_RESET}");
+        println!("{COLOR_RED}Verification FAILED!{COLOR_RESET}");
         println!("  Expected: {expected_hash}");
         println!("  Actual:   {actual_hash}");
         Ok(false)
