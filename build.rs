@@ -19,7 +19,7 @@ fn main() {
     {
         let profile = std::env::var("PROFILE").unwrap_or_default();
         if profile == "debug" {
-            println!("cargo:rustc-link-lib=ucrtd");
+            println!("cargo:rustc-link-lib=libucrtd");
         } else {
             println!("cargo:rustc-link-arg=/DEFAULTLIB:ucrt");
             println!("cargo:rustc-link-arg=/NODEFAULTLIB:libucrt");
