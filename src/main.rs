@@ -17,7 +17,7 @@ pub type PAPIProgressCallback = Option<unsafe extern "C" fn(u64)>;
 pub type PAPIProgressResetCallback = Option<unsafe extern "C" fn(*const c_char, u16, u64)>;
 pub type PAPIStringCallback = Option<unsafe extern "C" fn(*const c_char, u16)>;
 
-extern "C" {
+unsafe extern "C" {
     pub fn papi_fpga_program_sram(
         path: *const c_char,
         path_len: usize,
@@ -52,18 +52,18 @@ fn linkify(url: impl std::fmt::Display, label: impl std::fmt::Display) -> String
 
 unsafe extern "C" fn on_loader_message(msg: *const c_char, msg_len: u16) {
     let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
-    let s = std::str::from_utf8_unchecked(bytes).to_string();
+    let s = unsafe {  std::str::from_utf8_unchecked(bytes) };
     println!("{s}");
 }
 unsafe extern "C" fn on_loader_error(msg: *const c_char, msg_len: u16) {
     let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
-    let s = std::str::from_utf8_unchecked(bytes);
+    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
     println!("{COLOR_RED}{s}{COLOR_RESET}");
 }
 
 unsafe extern "C" fn on_loader_progress_reset(msg: *const c_char, msg_len: u16, max_progress: u64) {
     let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
-    let s = std::str::from_utf8_unchecked(bytes);
+    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
 
     if let Ok(mut guard) = C_PROGRESS_BAR.lock() {
         let style = ProgressStyle::default_bar()
@@ -410,7 +410,7 @@ fn enable_ansi_support() {
     use std::os::windows::io::AsRawHandle;
     type HANDLE = *mut std::ffi::c_void;
 
-    extern "system" {
+    unsafe extern "system" {
         fn GetConsoleMode(handle: HANDLE, mode_pointer: *mut u32) -> i32;
         fn SetConsoleMode(handle: HANDLE, mode: u32) -> i32;
     }
