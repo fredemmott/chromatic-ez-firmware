@@ -142,6 +142,9 @@ struct Args {
 
     #[arg(long, help = "Skip 'Press enter to exit' prompts")]
     no_pause: bool,
+
+    #[arg(long, help = "Select the specified firmware number")]
+    firmware: Option<usize>,
 }
 impl Args {
     fn target(&self) -> Option<Target> {
@@ -182,15 +185,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print!("Enter choice ({COLOR_GREEN}1{COLOR_RESET}-{COLOR_GREEN}{}{COLOR_RESET}): ", fw_options.len());
         io::stdout().flush()?;
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-
-        if let Ok(choice) = input.trim().parse::<usize>() {
+        if let Some(choice) = args.firmware {
             if choice >= 1 && choice <= fw_options.len() {
                 break &fw_options[choice - 1];
             }
+            println!("Invalid firmware specified on command line");
+            before_exit();
+            return Err("Invalid firmware on command line".into());
+        } else {
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+
+            if let Ok(choice) = input.trim().parse::<usize>() {
+                if choice >= 1 && choice <= fw_options.len() {
+                    break &fw_options[choice - 1];
+                }
+            }
+            println!("Invalid selection, please try again.");
         }
-        println!("Invalid selection, please try again.");
     };
 
     let temp_dir = std::env::temp_dir().join("chromatic_flasher");
