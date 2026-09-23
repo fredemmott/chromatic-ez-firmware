@@ -136,6 +136,12 @@ enum Target {
 struct Args {
     #[arg(short, long, value_enum, default_value_t = Mode::WriteFlash)]
     mode: Mode,
+
+    #[arg(short, long, help = "Skip confirmation prompts")]
+    yes: bool,
+
+    #[arg(long, help = "Skip 'Press enter to exit' prompts")]
+    no_pause: bool,
 }
 impl Args {
     fn target(&self) -> Option<Target> {
@@ -152,8 +158,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fw_options = get_firmware_options();
     let args = Args::parse();
 
+    let before_exit : fn() = if args.no_pause {
+        || {}
+    } else {
+        wait_for_exit
+    };
+
     if args.target().is_some() && !have_single_chromatic_target()? {
-        wait_for_exit();
+        before_exit();
         return Ok(());
     }
 
@@ -192,13 +204,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     if !fw_ok {
         eprintln!("\n{COLOR_RED}Hash verification failed. Aborting execution.{COLOR_RESET}");
-        wait_for_exit();
+        before_exit();
         return Ok(());
     }
 
     if args.mode == Mode::DownloadOnly {
         println!("Downloaded to {}", linkify(temp_dir.display(), fw_path.display()));
-        wait_for_exit();
+        before_exit();
         return Ok(());
     }
 
@@ -222,12 +234,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print!("\nDo you want to proceed? ({COLOR_RED}y{COLOR_RESET}/{COLOR_GREEN}N{COLOR_RESET}): ");
     io::stdout().flush()?;
 
-    let mut confirm = String::new();
-    io::stdin().read_line(&mut confirm)?;
-    let confirm = confirm.trim().to_lowercase();
+    if args.yes {
+        println!("{COLOR_YELLOW}'--yes' passed on command line{COLOR_RESET}")
+    } else {
+        let mut confirm = String::new();
+        io::stdin().read_line(&mut confirm)?;
+        let confirm = confirm.trim().to_lowercase();
 
-    if confirm != "y" && confirm != "yes" {
-        return Ok(());
+        if confirm != "y" && confirm != "yes" {
+            return Ok(());
+        }
     }
 
     // 5. Execute openFPGALoader passing the firmware path
@@ -260,7 +276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    wait_for_exit();
+    before_exit();
     Ok(())
 }
 
