@@ -1,5 +1,14 @@
 fn main() {
-    let dst = cmake::Config::new("c_src").build();
+    let mut config= cmake::Config::new("c_src");
+
+    #[cfg(target_env="msvc")]
+    {
+        config.define("CMAKE_MSVC_RUNTIME_LIBRARY","MultiThreaded$<$<CONFIG:Debug>:Debug>");
+        config.cflag("/MT$<$<CONFIG:Debug>:d>");
+        config.cxxflag("/MT$<$<CONFIG:Debug>:d>");
+    }
+
+    let dst = config.build();
 
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-lib=static=openFPGAloader-chromatic");
@@ -12,7 +21,8 @@ fn main() {
         if profile == "debug" {
             println!("cargo:rustc-link-lib=ucrtd");
         } else {
-            println!("cargo:rustc-link-lib=ucrt");
+            println!("cargo:rustc-link-arg=/DEFAULTLIB:ucrt");
+            println!("cargo:rustc-link-arg=/NODEFAULTLIB:libucrt");
         }
     }
 
