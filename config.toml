@@ -1,0 +1,15 @@
+[[firmware]]
+title = "fredemmott/chromatic_dumper"
+version = "v2026.09.20.0 (based on ModRetro v18.8)"
+description = "ModRetro's firmware, modified to support FlashGBX."
+filename_prefix = "fw_fredemmott"
+fpga_url = "https://github.com/fredemmott/chromatic_dumper/releases/download/dumper-v2026.09.20.00/evt1_x2.fs"
+fpga_sha256 = "9588e81476b556bc08c16854bdad45d75e767af217c5a4411524241025a3d7e1"
+
+[[firmware]]
+title = "ModRetro"
+version = "v18.8"
+description = "The original firmware for Chromatic."
+filename_prefix = "fw_modretro"
+fpga_url = "https://github.com/ModRetro/oss-chromatic-console-fpga/releases/download/v18.8/v18.8_20251224.fs"
+fpga_sha256 = "7f5c7811d260f850dfba408178748a5c1aab803f7419bcb34adde70395a7a8af"

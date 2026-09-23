@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::slice;
 use nusb::MaybeFuture;
 use url::Url;
+use serde::Deserialize;
 
 pub type PAPIProgressCallback = Option<unsafe extern "C" fn(usize, usize)>;
 pub type PAPIStringCallback = Option<unsafe extern "C" fn(*const c_char, u16)>;
@@ -42,51 +43,34 @@ unsafe extern "C" fn on_loader_error(msg: *const c_char, msg_len: u16) {
 }
 unsafe extern "C" fn on_loader_progress(progress: usize, total: usize) {}
 
-struct RemoteResource {
-    filename_prefix: &'static str,
-    extension: &'static str,
-    url: &'static str,
-    sha256: &'static str,
+#[derive(Debug, Deserialize)]
+pub struct Firmware {
+    pub title: String,
+    pub version: String,
+    pub description: String,
+    pub filename_prefix: String,
+    pub fpga_url: String,
+    pub fpga_sha256: String,
+
 }
 
-impl RemoteResource {
-    fn local_filename(&self) -> String {
-        format!("{}-{}.{}", self.filename_prefix, &self.sha256[..8], self.extension)
+impl Firmware {
+    fn fpga_local_filename(&self) -> String {
+        format!("{}-{}.fs", self.filename_prefix, &self.fpga_sha256[..8])
     }
 }
 
-struct RemoteFirmwareResource {
-    resource: RemoteResource,
-    title: &'static str,
-    version: &'static str,
-    description: &'static str,
+#[derive(Debug, Deserialize)]
+struct Config {
+    firmware: Vec<Firmware>,
 }
 
-const FW_MODRETRO_FS: RemoteFirmwareResource = RemoteFirmwareResource {
-    resource: RemoteResource {
-        filename_prefix: "fw_modretro",
-        extension: "fs",
-        url: "https://github.com/ModRetro/oss-chromatic-console-fpga/releases/download/v18.8/v18.8_20251224.fs",
-        sha256: "7f5c7811d260f850dfba408178748a5c1aab803f7419bcb34adde70395a7a8af",
-    },
-    title: "ModRetro",
-    version: "v18.8",
-    description: "The original firmware for Chromatic. This firmware can not be used with FlashGBX.",
-};
+const CONFIG_TOML: &str = include_str!("../config.toml");
+fn get_firmware_options() -> Vec<Firmware> {
+    let config: Config = toml::from_str(CONFIG_TOML).unwrap();
+    config.firmware
+}
 
-const FW_FREDEMMOTT_FS: RemoteFirmwareResource = RemoteFirmwareResource {
-    resource: RemoteResource {
-        filename_prefix: "fw_fredemmott",
-        extension: "fs",
-        url: "file:///D:/chromatic_fpga/esp32t/impl/pnr/evt1_x2.fs",
-        sha256: "748b669ffd3a6402cb183046b4f899fb7e09246eebe910ed593b002aeb15f8b8",
-    },
-    title: "fredemmott/chromatic_dumper",
-    version: "v2026.06.03.1 (based on ModRetro v18.8)",
-    description: "ModRetro's firmware, modified to support FlashGBX.",
-};
-
-const FW_OPTIONS: &[RemoteFirmwareResource] = &[FW_FREDEMMOTT_FS, FW_MODRETRO_FS];
 
 fn wait_for_exit() {
     println!("Press enter to exit.");
@@ -101,25 +85,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    let fw_options = get_firmware_options();
+
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
     println!("{COLOR_YELLOW} Select Firmware Option:{COLOR_RESET}");
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}\n");
 
-    for (i, fw) in FW_OPTIONS.iter().enumerate() {
+    for (i, fw) in fw_options.iter().enumerate() {
         println!("{COLOR_GREEN}{}{COLOR_RESET}) {} {}", i + 1, fw.title, fw.version);
         println!("   {COLOR_GRAY}{}{COLOR_RESET}\n", fw.description);
     }
 
     let selected_fw = loop {
-        print!("Enter choice ({COLOR_GREEN}1{COLOR_RESET}-{COLOR_GREEN}{}{COLOR_RESET}): ", FW_OPTIONS.len());
+        print!("Enter choice ({COLOR_GREEN}1{COLOR_RESET}-{COLOR_GREEN}{}{COLOR_RESET}): ", fw_options.len());
         io::stdout().flush()?;
 
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
 
         if let Ok(choice) = input.trim().parse::<usize>() {
-            if choice >= 1 && choice <= FW_OPTIONS.len() {
-                break &FW_OPTIONS[choice - 1];
+            if choice >= 1 && choice <= fw_options.len() {
+                break &fw_options[choice - 1];
             }
         }
         println!("Invalid selection, please try again.");
@@ -128,9 +114,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = std::env::temp_dir().join("chromatic_flasher");
     fs::create_dir_all(&temp_dir)?;
 
-    let fw_path = temp_dir.join(selected_fw.resource.local_filename());
+    let fw_path = temp_dir.join(selected_fw.fpga_local_filename());
 
-    let fw_ok = ensure_available(selected_fw.resource.url, selected_fw.resource.sha256, &fw_path, selected_fw.title)?;
+    let fw_ok = ensure_available(&selected_fw.fpga_url, &selected_fw.fpga_sha256, &fw_path, &selected_fw.title)?;
 
     println!();
     if !fw_ok {
@@ -157,7 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 5. Execute openFPGALoader passing the firmware path
-    println!("\n{COLOR_GREEN}Executing openFPGALoader...{COLOR_RESET}\n");
+    println!("\n{COLOR_GREEN}Programming FPGA...{COLOR_RESET}\n");
 
     let fw_path_bytes = fw_path.as_os_str().as_encoded_bytes();
 
