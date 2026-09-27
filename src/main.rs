@@ -87,10 +87,10 @@ unsafe extern "C" fn on_loader_progress(progress: u64) {
 
 #[derive(Debug, Deserialize)]
 pub struct Firmware {
+    pub id: String,
     pub title: String,
     pub version: String,
     pub description: String,
-    pub filename_prefix: String,
     pub fpga_url: String,
     pub fpga_sha256: String,
 
@@ -98,7 +98,7 @@ pub struct Firmware {
 
 impl Firmware {
     fn fpga_local_filename(&self) -> String {
-        format!("{}-{}.fs", self.filename_prefix, &self.fpga_sha256[..8])
+        format!("fpga-{}-{}.fs", self.id, &self.fpga_sha256[..8])
     }
 }
 
@@ -237,8 +237,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n{COLOR_YELLOW}=========================================={COLOR_RESET}");
     println!("{COLOR_YELLOW} Ready to Program Firmware {COLOR_RESET}");
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
-    println!("ID:       {} {}", selected_fw.title, selected_fw.version);
-    println!("Firmware: {}", linkify(download_dir.display(), fw_path.display()));
+    println!("Name:    {}", selected_fw.title);
+    println!("Version: {}", selected_fw.version);
+    println!("File:    {}", linkify(download_dir.display(), fw_path.display()));
 
     let target = args.target().unwrap();
     match target {
