@@ -1,7 +1,7 @@
 [[firmware]]
 id = "fredemmott"
 title = "fredemmott/chromatic_dumper"
-version = "v2026.09.20.0 (based on ModRetro v18.8)"
+version = "v2026.09.27.0 (based on ModRetro v18.8)"
 description = "ModRetro's firmware, modified to support FlashGBX."
 filename_prefix = "fredemmott"
 fpga_url = "https://github.com/fredemmott/chromatic_dumper/releases/download/dumper-v2026.09.27.00/evt1_x2.fs"
