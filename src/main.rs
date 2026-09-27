@@ -209,13 +209,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let this_exe = std::env::current_exe()?;
         let mut folder_name = this_exe.file_stem().unwrap().to_os_string();
         folder_name.push("-downloads");
-        std::env::current_dir()?.join(folder_name)
+        let mut path = std::env::current_dir()?.join(&folder_name);
+
+        if fs::create_dir_all(&path).is_err() {
+            path = std::env::temp_dir().join(&folder_name)
+        }
+        fs::create_dir_all(&path)?;
+        path
     };
-    // Linkify
-    fs::create_dir_all(&download_dir)?;
 
     let fw_path = download_dir.join(selected_fw.fpga_local_filename());
-
     let fw_ok = ensure_available(&selected_fw.fpga_url, &selected_fw.fpga_sha256, &fw_path, &selected_fw.title)?;
 
     println!();
