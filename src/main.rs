@@ -44,7 +44,8 @@ const COLOR_RED: &str = "\x1b[31;1m";
 const COLOR_GREEN: &str = "\x1b[32;1m";
 const COLOR_YELLOW: &str = "\x1b[33;1m";
 const COLOR_CYAN: &str = "\x1b[36;1m";
-const COLOR_GRAY: &str = "\x1b[37;1m";
+const COLOR_BOLD: &str = "\x1b[1m";
+const COLOR_DIM: &str = "\x1b[2m";
 
 fn linkify(url: impl std::fmt::Display, label: impl std::fmt::Display) -> String {
     format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, label)
@@ -93,7 +94,6 @@ pub struct Firmware {
     pub description: String,
     pub fpga_url: String,
     pub fpga_sha256: String,
-
 }
 
 impl Firmware {
@@ -177,8 +177,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}\n");
 
     for (i, fw) in fw_options.iter().enumerate() {
-        println!("{COLOR_GREEN}{}{COLOR_RESET}) {} {}", i + 1, fw.title, fw.version);
-        println!("   {COLOR_GRAY}{}{COLOR_RESET}\n", fw.description);
+        println!("{COLOR_GREEN}{}{COLOR_RESET}) {COLOR_BOLD}{} {}{COLOR_RESET}", i + 1, fw.title, fw.version);
+        println!("   {COLOR_DIM}{}{COLOR_RESET}\n", fw.description);
     }
 
     let selected_fw = loop {
@@ -369,7 +369,7 @@ fn ensure_available(url: &str, hash: &str, path: &PathBuf, title: &str) -> Resul
     }
 
     println!("\n{COLOR_CYAN}Fetching {title}...{COLOR_RESET}");
-    println!("    {COLOR_GRAY}{url}{COLOR_RESET}");
+    println!("    {COLOR_DIM}{url}{COLOR_RESET}");
     fetch_resource(url, path)?;
     Ok(verify_hash(path, hash)?)
 }
