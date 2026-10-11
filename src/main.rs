@@ -89,25 +89,28 @@ unsafe extern "C" fn on_loader_progress(progress: u64) {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct Firmware {
-    pub id: String,
-    pub title: String,
+pub struct FirmwareVersion {
     pub version: String,
-    pub description: String,
     pub fpga_url: String,
     pub fpga_sha256: String,
     pub mcu_url: String,
     pub mcu_sha256: String,
 }
 
-impl Firmware {
-    fn fpga_local_filename(&self) -> String {
-        format!("fpga-{}-{}.fs", self.id, &self.fpga_sha256[..8])
-    }
+#[derive(Debug, Deserialize, Clone)]
+pub struct Firmware {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub versions: Vec<FirmwareVersion>,
+}
 
-    fn mcu_local_filename(&self) -> String {
-        format!("mcu-{}-{}.fs", self.id, &self.mcu_sha256[..8])
-    }
+fn fpga_local_filename(fw: &Firmware, ver: &FirmwareVersion) -> String {
+    format!("fpga-{}-{}.fs", fw.id, &ver.fpga_sha256[..8])
+}
+
+fn mcu_local_filename(fw: &Firmware, ver: &FirmwareVersion) -> String {
+    format!("mcu-{}-{}.bin", fw.id, &ver.mcu_sha256[..8])
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,24 +121,28 @@ struct Config {
 const CONFIG_TOML: &str = include_str!("../config.toml");
 fn get_firmware_options() -> Vec<Firmware> {
     let config: Config = toml::from_str(CONFIG_TOML).unwrap();
-    let by_ref: std::collections::HashMap<String, Firmware> = config
+    let by_ref: std::collections::HashMap<String, FirmwareVersion> = config
         .firmware
         .iter()
-        .map(|fw| {
-            (format!("ref://{}/{}", fw.id, fw.version), (*fw).clone())
+        .flat_map(|fw| {
+            fw.versions.iter().map(|ver| {
+                (format!("ref://{}/{}", fw.id, ver.version), ver.clone())
+            })
         })
         .collect();
 
     config.firmware
         .into_iter()
         .map(|mut fw| {
-            if fw.mcu_url.starts_with("ref://") {
-                fw.mcu_sha256 = by_ref[&fw.mcu_url].mcu_sha256.clone();
-                fw.mcu_url = by_ref[&fw.mcu_url].mcu_url.clone();
-            }
-            if fw.fpga_url.starts_with("ref://") {
-                fw.fpga_sha256 = by_ref[&fw.fpga_url].fpga_sha256.clone();
-                fw.fpga_url = by_ref[&fw.fpga_url].fpga_url.clone();
+            for ver in &mut fw.versions {
+                if ver.mcu_url.starts_with("ref://") {
+                    ver.mcu_sha256 = by_ref[&ver.mcu_url].mcu_sha256.clone();
+                    ver.mcu_url = by_ref[&ver.mcu_url].mcu_url.clone();
+                }
+                if ver.fpga_url.starts_with("ref://") {
+                    ver.fpga_sha256 = by_ref[&ver.fpga_url].fpga_sha256.clone();
+                    ver.fpga_url = by_ref[&ver.fpga_url].fpga_url.clone();
+                }
             }
             fw
         })
@@ -172,8 +179,11 @@ struct Args {
     #[arg(long, help = "Skip 'Press enter to exit' prompts")]
     no_pause: bool,
 
-    #[arg(long, help = "Select the specified firmware number")]
-    firmware: Option<usize>,
+    #[arg(long, help = "Select the specified firmware by ID")]
+    firmware: Option<String>,
+
+    #[arg(long, help = "Select the specified firmware version ")]
+    firmware_version: Option<String>,
 }
 impl Args {
     fn target(&self) -> Option<Target> {
@@ -278,11 +288,11 @@ fn flash_mcu(mcu_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 None
             }
         ).ok_or("USB serial device not found")?;
-
+    
     let serial = espflash::connection::Port::open(&serialport::new(port_name, 115_200))?;
     let connection = espflash::connection::Connection::new(serial, usb_info, ResetAfterOperation::HardReset, ResetBeforeOperation::DefaultReset, 115_200);
 
-    let mut flasher = espflash::flasher::Flasher::connect(connection, false, true, false, None, None)?;
+    let mut flasher = espflash::flasher::Flasher::connect(connection, true, true, false, None, None)?;
     let mut progress = McuProgress {pb: None};
 
     let data = fs::read(mcu_path)?;
@@ -309,11 +319,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
-    println!("{COLOR_YELLOW} Select Firmware Option:{COLOR_RESET}");
+    println!("{COLOR_YELLOW} Select Firmware:{COLOR_RESET}");
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}\n");
 
     for (i, fw) in fw_options.iter().enumerate() {
-        println!("{COLOR_GREEN}{}{COLOR_RESET}) {COLOR_BOLD}{} {}{COLOR_RESET}", i + 1, fw.title, fw.version);
+        println!("{COLOR_GREEN}{}{COLOR_RESET}) {COLOR_BOLD}{}{COLOR_RESET}", i + 1, fw.title);
         println!("   {COLOR_DIM}{}{COLOR_RESET}\n", fw.description);
     }
 
@@ -321,13 +331,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print!("Enter choice ({COLOR_GREEN}1{COLOR_RESET}-{COLOR_GREEN}{}{COLOR_RESET}): ", fw_options.len());
         io::stdout().flush()?;
 
-        if let Some(choice) = args.firmware {
-            if choice >= 1 && choice <= fw_options.len() {
-                break &fw_options[choice - 1];
+        if let Some(choice) = &args.firmware {
+            match fw_options.iter().find(|f| { &f.id == choice }) {
+                Some(fw) => break fw,
+                None => {
+                    println!("Invalid firmware specified on command line");
+                    before_exit();
+                    return Err("Invalid firmware on command line".into());
+                }
             }
-            println!("Invalid firmware specified on command line");
-            before_exit();
-            return Err("Invalid firmware on command line".into());
         } else {
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
@@ -338,6 +350,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             println!("Invalid selection, please try again.");
+        }
+    };
+
+    let selected_version = if selected_fw.versions.len() == 1 {
+        &selected_fw.versions[0]
+    } else {
+        loop {
+            println!("\n{COLOR_YELLOW}=========================================={COLOR_RESET}");
+            println!("{COLOR_YELLOW} Select Version:{COLOR_RESET}");
+            println!("{COLOR_YELLOW}=========================================={COLOR_RESET}\n");
+            for (i, ver) in selected_fw.versions.iter().enumerate() {
+                print!("{COLOR_GREEN}{}{COLOR_RESET}) {COLOR_BOLD}{} {}{COLOR_RESET}", i + 1, selected_fw.title, ver.version);
+                if i == 0 {
+                    println!(" {COLOR_DIM}(default){COLOR_RESET}");
+                } else {
+                    println!();
+                }
+            }
+            print!("Enter choice ({COLOR_GREEN}1{COLOR_RESET}-{COLOR_GREEN}{}{COLOR_RESET}) or hit enter for default: ", selected_fw.versions.len());
+            io::stdout().flush()?;
+            if let Some(choice) = &args.firmware_version {
+                match selected_fw.versions.iter().find(|v| { &v.version == choice }) {
+                    Some(ver) => break ver,
+                    None => {
+                        println!("Invalid firmware version specified on command line");
+                        before_exit();
+                        return Err("Invalid firmware version on command line".into());
+                    }
+                }
+            } else {
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                let input = input.trim();
+
+                if let Ok(choice) = input.parse::<usize>() {
+                    if choice >= 1 && choice <= selected_fw.versions.len() {
+                        break &selected_fw.versions[choice - 1];
+                    }
+                } else if input.is_empty() {
+                    break &selected_fw.versions[0];
+                }
+                println!("Invalid selection, please try again.");
+            }
         }
     };
 
@@ -354,10 +409,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         path
     };
 
-    let fpga_path = download_dir.join(selected_fw.fpga_local_filename());
-    let fpga_ok = ensure_available(&selected_fw.fpga_url, &selected_fw.fpga_sha256, &fpga_path, &selected_fw.title)?;
-    let mcu_path = download_dir.join(selected_fw.mcu_local_filename());
-    let mcu_ok= ensure_available(&selected_fw.mcu_url, &selected_fw.mcu_sha256, &mcu_path, &selected_fw.title)?;
+    let fpga_path = download_dir.join(fpga_local_filename(selected_fw, selected_version));
+    let fpga_ok = ensure_available(&selected_version.fpga_url, &selected_version.fpga_sha256, &fpga_path, &format!("{} - FPGA", &selected_fw.title))?;
+    let mcu_path = download_dir.join(mcu_local_filename(selected_fw, selected_version));
+    let mcu_ok= ensure_available(&selected_version.mcu_url, &selected_version.mcu_sha256, &mcu_path, &format!("{} - MCU", &selected_fw.title))?;
 
     println!();
     if !(fpga_ok && mcu_ok) {
@@ -380,19 +435,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{COLOR_YELLOW} Ready to Program Firmware {COLOR_RESET}");
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
     println!("Name:    {}", selected_fw.title);
-    println!("Version: {}", selected_fw.version);
+    println!("Version: {}", selected_version.version);
     println!("FPGA:    {}", linkify(download_dir.display(), fpga_path.display()));
     println!("MCU:     {}", linkify(download_dir.display(), mcu_path.display()));
 
     let target = args.target().unwrap();
-    match target {
-        Target::Flash => {
-            println!("\n{COLOR_RED}Writing to FLASH{COLOR_RESET} - if you decide to undo this change, you will need to re-flash the previous firmware.");
-        }
-        Target::SRAM => {
-            println!("\n{COLOR_GREEN}Writing to SRAM{COLOR_RESET} - this firmware change will be undone when you turn off your console.");
-        }
-    }
 
     print!("\nDo you want to proceed? ({COLOR_RED}y{COLOR_RESET}/{COLOR_GREEN}N{COLOR_RESET}): ");
     io::stdout().flush()?;
@@ -409,10 +456,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    flash_fpga(&fpga_path, target)?;
-    flash_mcu(&mcu_path)?;
+    //flash_fpga(&fpga_path, target)?;
+    if target == Target::Flash {
+        flash_mcu(&mcu_path)?;
+    } else {
+        println!("\n{COLOR_RED}Skipping MCU, can't write to SRAM{COLOR_RESET}");
+    }
 
-    println!("\n{COLOR_GREEN}Update complete.{COLOR_RESET}");
+    println!("\n{COLOR_YELLOW}Turn the power switch off, take out the batteries, wait a few minutes, then turn the power switch back on.{COLOR_RESET}");
     before_exit();
     Ok(())
 }
