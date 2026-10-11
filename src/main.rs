@@ -162,7 +162,7 @@ enum Mode {
     DownloadOnly,
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Copy, Clone, Debug)]
 enum Target {
     Flash,
     SRAM,
@@ -456,7 +456,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    //flash_fpga(&fpga_path, target)?;
+    flash_fpga(&fpga_path, target)?;
     if target == Target::Flash {
         flash_mcu(&mcu_path)?;
     } else {
