@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::ffi::{c_char, c_int};
 use std::fs::{self, File};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::slice;
 use nusb::MaybeFuture;
 use serde::Deserialize;
@@ -110,6 +110,17 @@ struct Config {
     firmware: Vec<Firmware>,
 }
 
+pub fn download_dir() -> anyhow::Result<PathBuf> {
+    let folder_name = "chromatic-ez-firmware-downloads";
+    let mut path = std::env::current_dir()?.join(folder_name);
+
+    if fs::create_dir_all(&path).is_err() {
+        path = std::env::temp_dir().join(&folder_name)
+    }
+    fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
 const CONFIG_TOML: &str = include_str!("../config.toml");
 pub fn get_firmware_options() -> Vec<Firmware> {
     let config: Config = toml::from_str(CONFIG_TOML).unwrap();
@@ -141,7 +152,7 @@ pub fn get_firmware_options() -> Vec<Firmware> {
         .collect()
 }
 
-#[derive(Clone, Debug, clap::ValueEnum, Eq, PartialEq)]
+#[derive(Clone, Debug, clap::ValueEnum, Eq, PartialEq, Copy)]
 pub enum Mode {
     WriteFlash,
     WriteSRAM,

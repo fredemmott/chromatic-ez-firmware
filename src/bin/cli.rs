@@ -304,18 +304,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let download_dir = {
-        let this_exe = std::env::current_exe()?;
-        let mut folder_name = this_exe.file_stem().unwrap().to_os_string();
-        folder_name.push("-downloads");
-        let mut path = std::env::current_dir()?.join(&folder_name);
-
-        if fs::create_dir_all(&path).is_err() {
-            path = std::env::temp_dir().join(&folder_name)
-        }
-        fs::create_dir_all(&path)?;
-        path
-    };
+    let download_dir = lib::download_dir()?;
 
     let fpga_path = download_dir.join(lib::fpga_local_filename(selected_fw, selected_version));
     let fpga_ok = ensure_available(&selected_version.fpga_url, &selected_version.fpga_sha256, &fpga_path, &format!("{} - FPGA", &selected_fw.title))?;

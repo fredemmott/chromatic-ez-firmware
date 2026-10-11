@@ -18,6 +18,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 espflash = { version = "4.6.0", features = ["serialport"], default-features = false}
 serialport = "4.10.1"
 anyhow = "1.0.104"
+egui = "0.36.2"
+eframe = "0.36.2"
 
 [build-dependencies]
 cmake = "0.1"
@@ -25,3 +27,7 @@ cmake = "0.1"
 [[bin]]
 name = "chromatic-ez-firmware-cli"
 path = "src/bin/cli.rs"
+
+[[bin]]
+name = "chromatic-ez-firmware-gui"
+path = "src/bin/gui.rs"
