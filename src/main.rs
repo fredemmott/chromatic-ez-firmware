@@ -279,7 +279,7 @@ fn flash_mcu(mcu_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .find_map(|port|
             if let serialport::SerialPortType::UsbPort(info) = &port.port_type {
-                if info.vid == 0x374E && info.pid == 0x0101 {
+                if is_chromatic(info.vid, info.pid) {
                     Some((port.port_name, info.clone()))
                 } else {
                     None
@@ -468,11 +468,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn is_chromatic(vendor_id: u16, product_id: u16) -> bool {
+    if vendor_id != 0x374E {
+        return false;
+    }
+    // The player number is part of the product ID when re-plugged
+    product_id >= 0x0101 && product_id <= 0x0108
+}
+
 fn have_single_chromatic_target(quiet: bool) -> Result<bool, Box<dyn std::error::Error>> {
     let devices: Vec<_> = nusb::list_devices().wait()?.collect();
 
     let chromatics = devices.iter().filter(|device| {
-        device.vendor_id() == 0x374E && device.product_id() == 0x0101
+        is_chromatic(device.vendor_id(), device.product_id())
     }).count();
     if chromatics == 0 {
         if !quiet {
