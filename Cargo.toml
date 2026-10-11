@@ -9,7 +9,6 @@ authors = ["Fred Emmott <fred@fredemmott.com>"]
 reqwest = { version = "0.12", features = ["blocking"] }
 sha2 = "0.10"
 hex = "0.4"
-url = "2.5"
 nusb = "0.2.7"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.6"
@@ -17,6 +16,7 @@ indicatif = "0.18.6"
 clap = { version = "4.6.7", features = ["derive"] }
 espflash = { version = "4.6.0", features = ["serialport"], default-features = false}
 serialport = "4.10.1"
+anyhow = "1.0.104"
 
 [build-dependencies]
 cmake = "0.1"

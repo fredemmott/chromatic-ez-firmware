@@ -1,3 +1,5 @@
+mod cli;
+
 use std::cmp::PartialEq;
 use sha2::{Digest, Sha256};
 use std::ffi::{c_char, c_int};
@@ -11,13 +13,26 @@ use serde::Deserialize;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Mutex;
 use std::thread::sleep;
+use anyhow::anyhow;
 use clap::{Parser, ValueEnum};
 use espflash::connection::{ResetAfterOperation, ResetBeforeOperation};
 
-static C_PROGRESS_BAR: Mutex<Option<ProgressBar>> = Mutex::new(None);
-pub type PAPIProgressCallback = Option<unsafe extern "C" fn(u64)>;
-pub type PAPIProgressResetCallback = Option<unsafe extern "C" fn(*const c_char, u16, u64)>;
-pub type PAPIStringCallback = Option<unsafe extern "C" fn(*const c_char, u16)>;
+use crate::cli::colors::*;
+
+pub trait FpgaProgressCallbacks : Send {
+    fn init(&mut self, message: &str, max_progress: u64);
+    fn update(&mut self, progress: u64);
+    fn message(&mut self, message: &str);
+    fn error(&mut self, message: &str);
+
+    fn success(&mut self);
+}
+
+static FPGA_PROGRESS: Mutex<Option<&'static mut dyn FpgaProgressCallbacks>> = Mutex::new(None);
+
+type PAPIProgressCallback = Option<unsafe extern "C" fn(u64)>;
+type PAPIProgressResetCallback = Option<unsafe extern "C" fn(*const c_char, u16, u64)>;
+type PAPIStringCallback = Option<unsafe extern "C" fn(*const c_char, u16)>;
 
 unsafe extern "C" {
     pub fn papi_fpga_program_sram(
@@ -41,50 +56,34 @@ unsafe extern "C" {
     pub fn papi_fpga_reset() -> c_int;
 }
 
-const COLOR_RESET: &str = "\x1b[0m";
-const COLOR_RED: &str = "\x1b[31;1m";
-const COLOR_GREEN: &str = "\x1b[32;1m";
-const COLOR_YELLOW: &str = "\x1b[33;1m";
-const COLOR_CYAN: &str = "\x1b[36;1m";
-const COLOR_BOLD: &str = "\x1b[1m";
-const COLOR_DIM: &str = "\x1b[2m";
-
-fn linkify(url: impl std::fmt::Display, label: impl std::fmt::Display) -> String {
-    format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, label)
-}
-
-unsafe extern "C" fn on_loader_message(msg: *const c_char, msg_len: u16) {
+unsafe extern "C" fn fpga_loader_message(msg: *const c_char, msg_len: u16) {
     let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
     let s = unsafe {  std::str::from_utf8_unchecked(bytes) };
-    println!("{s}");
-}
-unsafe extern "C" fn on_loader_error(msg: *const c_char, msg_len: u16) {
-    let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
-    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
-    println!("{COLOR_RED}{s}{COLOR_RESET}");
-}
-
-unsafe extern "C" fn on_loader_progress_reset(msg: *const c_char, msg_len: u16, max_progress: u64) {
-    let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
-    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
-
-    if let Ok(mut guard) = C_PROGRESS_BAR.lock() {
-        let style = ProgressStyle::default_bar()
-            .template("{msg:.cyan} [{elapsed_precise}] [{wide_bar:.cyan/blue}] ({eta} remaining)")
-            .unwrap()
-            .progress_chars("##-");
-        let pb = ProgressBar::new(max_progress)
-            .with_style(style)
-            .with_message(s.to_string());
-        *guard = Some(pb);
+    if let Ok(Some(callbacks)) = FPGA_PROGRESS.lock().as_deref_mut() {
+        callbacks.message(s);
     }
 }
 
-unsafe extern "C" fn on_loader_progress(progress: u64) {
-    if let Ok(guard) = C_PROGRESS_BAR.lock() {
-        if let Some(pb) = guard.as_ref() {
-            pb.set_position(progress as u64);
-        }
+unsafe extern "C" fn fpga_loader_error(msg: *const c_char, msg_len: u16) {
+    let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
+    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
+    if let Ok(Some(callbacks)) = FPGA_PROGRESS.lock().as_deref_mut() {
+        callbacks.error(s);
+    }
+}
+
+unsafe extern "C" fn fpga_loader_progress_reset(msg: *const c_char, msg_len: u16, max_progress: u64) {
+    let bytes = unsafe { slice::from_raw_parts(msg as *const u8, msg_len as usize) };
+    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
+
+    if let Ok(Some(callbacks)) = FPGA_PROGRESS.lock().as_deref_mut() {
+        callbacks.init(s, max_progress);
+    }
+}
+
+unsafe extern "C" fn fpga_loader_progress(progress: u64) {
+    if let Ok(Some(callbacks)) = FPGA_PROGRESS.lock().as_deref_mut() {
+        callbacks.update(progress);
     }
 }
 
@@ -149,21 +148,20 @@ fn get_firmware_options() -> Vec<Firmware> {
         .collect()
 }
 
-
 fn wait_for_exit() {
     println!("\nPress enter to exit.");
     std::io::stdin().read_line(&mut String::new()).unwrap();
 }
 
 #[derive(Clone, Debug, ValueEnum, Eq, PartialEq)]
-enum Mode {
+pub enum Mode {
     WriteFlash,
     WriteSRAM,
     DownloadOnly,
 }
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
-enum Target {
+pub enum Target {
     Flash,
     SRAM,
 }
@@ -195,43 +193,27 @@ impl Args {
     }
 }
 
-struct McuProgress {
-    pb: Option<ProgressBar>,
-}
-
-impl espflash::target::ProgressCallbacks for McuProgress {
-    fn init(&mut self, addr: u32, len: usize) {
-        let style = ProgressStyle::default_bar()
-            .template("{msg:.cyan} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta} remaining)")
-            .unwrap_or_else(|_| ProgressStyle::default_bar())
-            .progress_chars("##-");
-        let pb = ProgressBar::new(len as u64)
-            .with_style(style)
-            .with_message(format!("Flashing MCU at {addr:#X}"));
-        self.pb = Some(pb);
-    }
-
-    fn update(&mut self, current: usize) {
-        if let Some(ref pb) = self.pb {
-            pb.set_position(current as u64);
-        }
-    }
-
-    fn verifying(&mut self) {
-        if let Some(ref pb) = self.pb {
-            pb.set_message("Verifying...");
-        }
-    }
-
-    fn finish(&mut self, _skipped: bool) {
-        if let Some(ref pb) = self.pb {
-            pb.finish_and_clear();
-        }
+struct FpgaProgressResetGuard;
+impl Drop for FpgaProgressResetGuard {
+    fn drop(&mut self) {
+        *FPGA_PROGRESS.lock().unwrap() = None;
     }
 }
 
-fn flash_fpga(fpga_path: &Path, target: Target) -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n{COLOR_GREEN}Programming FPGA...{COLOR_RESET}\n");
+pub fn flash_fpga(
+    fpga_path: &Path,
+    target: Target,
+    progress: Option<&mut dyn FpgaProgressCallbacks>
+) -> anyhow::Result<()> {
+    if let Some(p) = progress {
+        unsafe {
+            let ptr: *mut dyn FpgaProgressCallbacks = &mut *p;
+            let static_ptr: &'static mut dyn FpgaProgressCallbacks = std::mem::transmute(ptr);
+            *FPGA_PROGRESS.lock().unwrap() = Some(static_ptr);
+        }
+    }
+
+    let _reset_guard = FpgaProgressResetGuard;
 
     let path_bytes = fpga_path.as_os_str().as_encoded_bytes();
 
@@ -243,22 +225,26 @@ fn flash_fpga(fpga_path: &Path, target: Target) -> Result<(), Box<dyn std::error
         flash_fn(
             path_bytes.as_ptr() as *const c_char,
             path_bytes.len() as usize,
-            Some(on_loader_message),
-            Some(on_loader_error),
-            Some(on_loader_progress_reset),
-            Some(on_loader_progress),
+            Some(fpga_loader_message),
+            Some(fpga_loader_error),
+            Some(fpga_loader_progress_reset),
+            Some(fpga_loader_progress),
         )
     };
 
     if status == 1 {
-        println!("\n{COLOR_GREEN}FPGA update complete.{COLOR_RESET}");
+        if let Ok(Some(callbacks)) = FPGA_PROGRESS.lock().as_deref_mut() {
+            callbacks.success();
+        }
         if target == Target::Flash {
-            println!("Rebooting FPGA...");
+            if let Ok(Some(callbacks)) = FPGA_PROGRESS.lock().as_deref_mut() {
+                callbacks.message("Rebooting FPGA...");
+            }
             unsafe {
                 papi_fpga_reset();
             }
             for _ in 0..30 {
-                if have_single_chromatic_target(true)? {
+                if count_chromatics()? == (DeviceCounts { chromatic: 1, gwu2x: 1 }) {
                     break;
                 }
                 sleep(std::time::Duration::from_millis(100));
@@ -266,16 +252,13 @@ fn flash_fpga(fpga_path: &Path, target: Target) -> Result<(), Box<dyn std::error
         }
         Ok(())
     } else {
-        println!("\n{COLOR_RED}openFPGALoader failed with status: {status}{COLOR_RESET}");
-        Err("openFPGALoader failed".into())
+        Err(anyhow!("openFPGALoader failed with status: {status}"))
     }
 
 }
 
-fn flash_mcu(mcu_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n{COLOR_GREEN}Programming MCU...{COLOR_RESET}\n");
-
-    let (port_name, usb_info) = serialport::available_ports().map_err(|e| format!("Failed to get available serial ports: {e}"))?
+pub (crate) fn flash_mcu(mcu_path: &Path) -> anyhow::Result<()> {
+    let (port_name, usb_info) = serialport::available_ports()?
         .into_iter()
         .find_map(|port|
             if let serialport::SerialPortType::UsbPort(info) = &port.port_type {
@@ -287,18 +270,17 @@ fn flash_mcu(mcu_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 None
             }
-        ).ok_or("USB serial device not found")?;
+        ).ok_or(anyhow!("USB serial device not found"))?;
     
     let serial = espflash::connection::Port::open(&serialport::new(port_name, 115_200))?;
     let connection = espflash::connection::Connection::new(serial, usb_info, ResetAfterOperation::HardReset, ResetBeforeOperation::DefaultReset, 115_200);
 
     let mut flasher = espflash::flasher::Flasher::connect(connection, true, true, false, None, None)?;
-    let mut progress = McuProgress {pb: None};
+    let mut progress = cli::McuProgress::default();
 
     let data = fs::read(mcu_path)?;
     flasher.write_bin_to_flash(0, data.as_slice(), &mut progress)?;
 
-    println!("\n{COLOR_GREEN}MCU update complete.{COLOR_RESET}");
     Ok(())
 }
 
@@ -313,7 +295,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         wait_for_exit
     };
 
-    if args.target().is_some() && !have_single_chromatic_target(false)? {
+    if args.target().is_some() && !cli::have_single_chromatic_target()? {
         before_exit();
         return Ok(());
     }
@@ -418,15 +400,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !(fpga_ok && mcu_ok) {
         eprintln!(
             "\n{COLOR_RED}Verification failed; you might want to delete {}.{COLOR_RESET}",
-            linkify(download_dir.display(), fpga_path.display())
+            cli::linkify(download_dir.display(), fpga_path.display())
         );
         before_exit();
         return Err("Bad Hash".into());
     }
 
     if args.mode == Mode::DownloadOnly {
-        println!("Downloaded FPGA to {}", linkify(download_dir.display(), fpga_path.display()));
-        println!("Downloaded MCU to {}", linkify(download_dir.display(), mcu_path.display()));
+        println!("Downloaded FPGA to {}", cli::linkify(download_dir.display(), fpga_path.display()));
+        println!("Downloaded MCU to {}", cli::linkify(download_dir.display(), mcu_path.display()));
         before_exit();
         return Ok(());
     }
@@ -436,8 +418,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
     println!("Name:    {}", selected_fw.title);
     println!("Version: {}", selected_version.version);
-    println!("FPGA:    {}", linkify(download_dir.display(), fpga_path.display()));
-    println!("MCU:     {}", linkify(download_dir.display(), mcu_path.display()));
+    println!("FPGA:    {}", cli::linkify(download_dir.display(), fpga_path.display()));
+    println!("MCU:     {}", cli::linkify(download_dir.display(), mcu_path.display()));
 
     let target = args.target().unwrap();
 
@@ -456,9 +438,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    flash_fpga(&fpga_path, target)?;
+    cli::flash_fpga(&fpga_path, target)?;
     if target == Target::Flash {
-        flash_mcu(&mcu_path)?;
+        cli::flash_mcu(&mcu_path)?;
     } else {
         println!("\n{COLOR_RED}Skipping MCU, can't write to SRAM{COLOR_RESET}");
     }
@@ -476,40 +458,28 @@ fn is_chromatic(vendor_id: u16, product_id: u16) -> bool {
     product_id >= 0x0101 && product_id <= 0x0108
 }
 
-fn have_single_chromatic_target(quiet: bool) -> Result<bool, Box<dyn std::error::Error>> {
-    let devices: Vec<_> = nusb::list_devices().wait()?.collect();
+fn is_gwu2x(vendor_id: u16, product_id: u16) -> bool {
+    // GoWin GWU2X (programming interface for GoWin GW5A-25A)
+    vendor_id == 0x33AA && product_id == 0x0120
+}
 
-    let chromatics = devices.iter().filter(|device| {
-        is_chromatic(device.vendor_id(), device.product_id())
-    }).count();
-    if chromatics == 0 {
-        if !quiet {
-            println!("{COLOR_RED}No Chromatics were found via USB. Is your console plugged in?{COLOR_RESET}")
-        }
-        return Ok(false);
-    }
-    if chromatics != 1 {
-        if !quiet {
-            println!("{COLOR_RED}Found {} Chromatic devices, required exactly 1.{COLOR_RESET}", chromatics);
-        }
-        return Ok(false);
-    }
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+struct DeviceCounts {
+    chromatic: usize,
+    gwu2x: usize,
+}
 
+fn count_chromatics() -> anyhow::Result<DeviceCounts> {
+    let mut ret = DeviceCounts { chromatic: 0, gwu2x: 0 };
 
-    let fpga_interfaces = devices.iter().filter(|device| {
-        // GoWin GWU2X (programming interface for GoWin GW5A-25A)
-        device.vendor_id() == 0x33AA && device.product_id() == 0x0120
-    }).count();
-    if fpga_interfaces != 1 {
-        if !quiet {
-            println!("{COLOR_RED}Found {} GoWin FPGA interfaces, required exactly 1.{COLOR_RESET}", fpga_interfaces);
+    for device in nusb::list_devices().wait()? {
+        if is_chromatic(device.vendor_id(), device.product_id()) {
+            ret.chromatic += 1;
+        } else if is_gwu2x(device.vendor_id(), device.product_id()) {
+            ret.gwu2x += 1;
         }
-        return Ok(false);
     }
-    if !quiet {
-        println!("{COLOR_GREEN}Found 1 Chromatic device and 1 GoWin FPGA interface.{COLOR_RESET}");
-    }
-    Ok(true)
+    Ok(ret)
 }
 
 fn fetch_resource(url_str: &str, dest: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -543,7 +513,7 @@ fn fetch_resource(url_str: &str, dest: &PathBuf) -> Result<(), Box<dyn std::erro
 
 fn ensure_available(url: &str, hash: &str, path: &PathBuf, title: &str) -> Result<bool, Box<dyn std::error::Error>> {
     if path.exists() {
-        if verify_hash(path, hash)? {
+        if cli::verify_hash(path, hash)? {
             return Ok(true);
         }
 
@@ -554,14 +524,15 @@ fn ensure_available(url: &str, hash: &str, path: &PathBuf, title: &str) -> Resul
     println!("\n{COLOR_CYAN}Fetching {title}...{COLOR_RESET}");
     println!("    {COLOR_DIM}{url}{COLOR_RESET}");
     fetch_resource(url, path)?;
-    Ok(verify_hash(path, hash)?)
+    Ok(cli::verify_hash(path, hash)?)
 }
 
+pub (crate) enum HashOutcome {
+    Match,
+    Mismatch { actual: String },
+}
 
-fn verify_hash(file_path: &Path, expected_hash: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    let file_name = file_path.file_name().unwrap().to_string_lossy();
-    println!("{COLOR_CYAN}Verifying hash for {file_name}...{COLOR_RESET}");
-
+pub (crate) fn verify_hash(file_path: &Path, expected_hash: &str) -> anyhow::Result<HashOutcome> {
     let mut file = File::open(file_path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
@@ -577,13 +548,9 @@ fn verify_hash(file_path: &Path, expected_hash: &str) -> Result<bool, Box<dyn st
     let actual_hash = hex::encode(hasher.finalize());
 
     if actual_hash.eq_ignore_ascii_case(expected_hash) {
-        println!("{COLOR_GREEN}Verification OK.{COLOR_RESET}");
-        Ok(true)
+        Ok(HashOutcome::Match)
     } else {
-        println!("{COLOR_RED}Verification FAILED!{COLOR_RESET}");
-        println!("  Expected: {expected_hash}");
-        println!("  Actual:   {actual_hash}");
-        Ok(false)
+        Ok(HashOutcome::Mismatch { actual: actual_hash })
     }
 }
 
