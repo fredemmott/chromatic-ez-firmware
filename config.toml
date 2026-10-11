@@ -1,6 +1,6 @@
 [[firmware]]
 id = "fredemmott"
-title = "fredemmott/chromatic_dumper"
+title = "fredemmott/chromatic-flashgbx-fpga"
 description = "ModRetro's firmware, modified to support FlashGBX."
 
 [[firmware.versions]]
