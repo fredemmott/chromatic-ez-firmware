@@ -10,7 +10,9 @@ use url::Url;
 use serde::Deserialize;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Mutex;
-use clap::{Parser, arg, ValueEnum};
+use std::thread::sleep;
+use clap::{Parser, ValueEnum};
+use espflash::connection::{ResetAfterOperation, ResetBeforeOperation};
 
 static C_PROGRESS_BAR: Mutex<Option<ProgressBar>> = Mutex::new(None);
 pub type PAPIProgressCallback = Option<unsafe extern "C" fn(u64)>;
@@ -86,7 +88,7 @@ unsafe extern "C" fn on_loader_progress(progress: u64) {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Firmware {
     pub id: String,
     pub title: String,
@@ -94,11 +96,17 @@ pub struct Firmware {
     pub description: String,
     pub fpga_url: String,
     pub fpga_sha256: String,
+    pub mcu_url: String,
+    pub mcu_sha256: String,
 }
 
 impl Firmware {
     fn fpga_local_filename(&self) -> String {
         format!("fpga-{}-{}.fs", self.id, &self.fpga_sha256[..8])
+    }
+
+    fn mcu_local_filename(&self) -> String {
+        format!("mcu-{}-{}.fs", self.id, &self.mcu_sha256[..8])
     }
 }
 
@@ -110,7 +118,28 @@ struct Config {
 const CONFIG_TOML: &str = include_str!("../config.toml");
 fn get_firmware_options() -> Vec<Firmware> {
     let config: Config = toml::from_str(CONFIG_TOML).unwrap();
+    let by_ref: std::collections::HashMap<String, Firmware> = config
+        .firmware
+        .iter()
+        .map(|fw| {
+            (format!("ref://{}/{}", fw.id, fw.version), (*fw).clone())
+        })
+        .collect();
+
     config.firmware
+        .into_iter()
+        .map(|mut fw| {
+            if fw.mcu_url.starts_with("ref://") {
+                fw.mcu_sha256 = by_ref[&fw.mcu_url].mcu_sha256.clone();
+                fw.mcu_url = by_ref[&fw.mcu_url].mcu_url.clone();
+            }
+            if fw.fpga_url.starts_with("ref://") {
+                fw.fpga_sha256 = by_ref[&fw.fpga_url].fpga_sha256.clone();
+                fw.fpga_url = by_ref[&fw.fpga_url].fpga_url.clone();
+            }
+            fw
+        })
+        .collect()
 }
 
 
@@ -156,6 +185,113 @@ impl Args {
     }
 }
 
+struct McuProgress {
+    pb: Option<ProgressBar>,
+}
+
+impl espflash::target::ProgressCallbacks for McuProgress {
+    fn init(&mut self, addr: u32, len: usize) {
+        let style = ProgressStyle::default_bar()
+            .template("{msg:.cyan} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta} remaining)")
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("##-");
+        let pb = ProgressBar::new(len as u64)
+            .with_style(style)
+            .with_message(format!("Flashing MCU at {addr:#X}"));
+        self.pb = Some(pb);
+    }
+
+    fn update(&mut self, current: usize) {
+        if let Some(ref pb) = self.pb {
+            pb.set_position(current as u64);
+        }
+    }
+
+    fn verifying(&mut self) {
+        if let Some(ref pb) = self.pb {
+            pb.set_message("Verifying...");
+        }
+    }
+
+    fn finish(&mut self, _skipped: bool) {
+        if let Some(ref pb) = self.pb {
+            pb.finish_and_clear();
+        }
+    }
+}
+
+fn flash_fpga(fpga_path: &Path, target: Target) -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n{COLOR_GREEN}Programming FPGA...{COLOR_RESET}\n");
+
+    let path_bytes = fpga_path.as_os_str().as_encoded_bytes();
+
+    let status = unsafe {
+        let flash_fn = match target {
+            Target::Flash => papi_fpga_program_flash,
+            Target::SRAM => papi_fpga_program_sram,
+        };
+        flash_fn(
+            path_bytes.as_ptr() as *const c_char,
+            path_bytes.len() as usize,
+            Some(on_loader_message),
+            Some(on_loader_error),
+            Some(on_loader_progress_reset),
+            Some(on_loader_progress),
+        )
+    };
+
+    if status == 1 {
+        println!("\n{COLOR_GREEN}FPGA update complete.{COLOR_RESET}");
+        if target == Target::Flash {
+            println!("Rebooting FPGA...");
+            unsafe {
+                papi_fpga_reset();
+            }
+            for _ in 0..30 {
+                if have_single_chromatic_target(true)? {
+                    break;
+                }
+                sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        Ok(())
+    } else {
+        println!("\n{COLOR_RED}openFPGALoader failed with status: {status}{COLOR_RESET}");
+        Err("openFPGALoader failed".into())
+    }
+
+}
+
+fn flash_mcu(mcu_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n{COLOR_GREEN}Programming MCU...{COLOR_RESET}\n");
+
+    let (port_name, usb_info) = serialport::available_ports().map_err(|e| format!("Failed to get available serial ports: {e}"))?
+        .into_iter()
+        .find_map(|port|
+            if let serialport::SerialPortType::UsbPort(info) = &port.port_type {
+                if info.vid == 0x374E && info.pid == 0x0101 {
+                    Some((port.port_name, info.clone()))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        ).ok_or("USB serial device not found")?;
+
+    let serial = espflash::connection::Port::open(&serialport::new(port_name, 115_200))?;
+    let connection = espflash::connection::Connection::new(serial, usb_info, ResetAfterOperation::HardReset, ResetBeforeOperation::DefaultReset, 115_200);
+
+    let mut flasher = espflash::flasher::Flasher::connect(connection, false, true, false, None, None)?;
+    let mut progress = McuProgress {pb: None};
+
+    let data = fs::read(mcu_path)?;
+    flasher.write_bin_to_flash(0, data.as_slice(), &mut progress)?;
+
+    println!("\n{COLOR_GREEN}MCU update complete.{COLOR_RESET}");
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_ansi_support();
     let fw_options = get_firmware_options();
@@ -167,7 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         wait_for_exit
     };
 
-    if args.target().is_some() && !have_single_chromatic_target()? {
+    if args.target().is_some() && !have_single_chromatic_target(false)? {
         before_exit();
         return Ok(());
     }
@@ -218,21 +354,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         path
     };
 
-    let fw_path = download_dir.join(selected_fw.fpga_local_filename());
-    let fw_ok = ensure_available(&selected_fw.fpga_url, &selected_fw.fpga_sha256, &fw_path, &selected_fw.title)?;
+    let fpga_path = download_dir.join(selected_fw.fpga_local_filename());
+    let fpga_ok = ensure_available(&selected_fw.fpga_url, &selected_fw.fpga_sha256, &fpga_path, &selected_fw.title)?;
+    let mcu_path = download_dir.join(selected_fw.mcu_local_filename());
+    let mcu_ok= ensure_available(&selected_fw.mcu_url, &selected_fw.mcu_sha256, &mcu_path, &selected_fw.title)?;
 
     println!();
-    if !fw_ok {
+    if !(fpga_ok && mcu_ok) {
         eprintln!(
             "\n{COLOR_RED}Verification failed; you might want to delete {}.{COLOR_RESET}",
-            linkify(download_dir.display(), fw_path.display())
+            linkify(download_dir.display(), fpga_path.display())
         );
         before_exit();
         return Err("Bad Hash".into());
     }
 
     if args.mode == Mode::DownloadOnly {
-        println!("Downloaded to {}", linkify(download_dir.display(), fw_path.display()));
+        println!("Downloaded FPGA to {}", linkify(download_dir.display(), fpga_path.display()));
+        println!("Downloaded MCU to {}", linkify(download_dir.display(), mcu_path.display()));
         before_exit();
         return Ok(());
     }
@@ -242,7 +381,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{COLOR_YELLOW}=========================================={COLOR_RESET}");
     println!("Name:    {}", selected_fw.title);
     println!("Version: {}", selected_fw.version);
-    println!("File:    {}", linkify(download_dir.display(), fw_path.display()));
+    println!("FPGA:    {}", linkify(download_dir.display(), fpga_path.display()));
+    println!("MCU:     {}", linkify(download_dir.display(), mcu_path.display()));
 
     let target = args.target().unwrap();
     match target {
@@ -253,7 +393,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\n{COLOR_GREEN}Writing to SRAM{COLOR_RESET} - this firmware change will be undone when you turn off your console.");
         }
     }
-
 
     print!("\nDo you want to proceed? ({COLOR_RED}y{COLOR_RESET}/{COLOR_GREEN}N{COLOR_RESET}): ");
     io::stdout().flush()?;
@@ -270,52 +409,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 5. Execute openFPGALoader passing the firmware path
-    println!("\n{COLOR_GREEN}Programming FPGA...{COLOR_RESET}\n");
+    flash_fpga(&fpga_path, target)?;
+    flash_mcu(&mcu_path)?;
 
-    let fw_path_bytes = fw_path.as_os_str().as_encoded_bytes();
-
-    unsafe {
-        let flash_fn = match target {
-            Target::Flash => papi_fpga_program_flash,
-            Target::SRAM => papi_fpga_program_sram,
-        };
-        let status = flash_fn(
-            fw_path_bytes.as_ptr() as *const c_char,
-            fw_path_bytes.len() as usize,
-            Some(on_loader_message),
-            Some(on_loader_error),
-            Some(on_loader_progress_reset),
-            Some(on_loader_progress),
-        );
-
-        if status == 1 {
-            println!("\n{COLOR_GREEN}Update complete.{COLOR_RESET}");
-            if target == Target::Flash {
-                println!("Rebooting FPGA...");
-                papi_fpga_reset();
-            }
-        } else {
-            println!("\n{COLOR_RED}openFPGALoader failed with status: {status}{COLOR_RESET}");
-        }
-    }
-
+    println!("\n{COLOR_GREEN}Update complete.{COLOR_RESET}");
     before_exit();
     Ok(())
 }
 
-fn have_single_chromatic_target() -> Result<bool, Box<dyn std::error::Error>> {
-    let devices : Vec<_> = nusb::list_devices().wait()?.collect();
+fn have_single_chromatic_target(quiet: bool) -> Result<bool, Box<dyn std::error::Error>> {
+    let devices: Vec<_> = nusb::list_devices().wait()?.collect();
 
     let chromatics = devices.iter().filter(|device| {
-       device.vendor_id() == 0x374E && device.product_id() == 0x0101
+        device.vendor_id() == 0x374E && device.product_id() == 0x0101
     }).count();
     if chromatics == 0 {
-        println!("{COLOR_RED}No Chromatics were found via USB. Is your console plugged in?{COLOR_RESET}");
+        if !quiet {
+            println!("{COLOR_RED}No Chromatics were found via USB. Is your console plugged in?{COLOR_RESET}")
+        }
         return Ok(false);
     }
     if chromatics != 1 {
-        println!("{COLOR_RED}Found {} Chromatic devices, required exactly 1.{COLOR_RESET}", chromatics);
+        if !quiet {
+            println!("{COLOR_RED}Found {} Chromatic devices, required exactly 1.{COLOR_RESET}", chromatics);
+        }
         return Ok(false);
     }
 
@@ -325,10 +442,14 @@ fn have_single_chromatic_target() -> Result<bool, Box<dyn std::error::Error>> {
         device.vendor_id() == 0x33AA && device.product_id() == 0x0120
     }).count();
     if fpga_interfaces != 1 {
-        println!("{COLOR_RED}Found {} GoWin FPGA interfaces, required exactly 1.{COLOR_RESET}", fpga_interfaces);
+        if !quiet {
+            println!("{COLOR_RED}Found {} GoWin FPGA interfaces, required exactly 1.{COLOR_RESET}", fpga_interfaces);
+        }
         return Ok(false);
     }
-    println!("{COLOR_GREEN}Found 1 Chromatic device and 1 GoWin FPGA interface.{COLOR_RESET}");
+    if !quiet {
+        println!("{COLOR_GREEN}Found 1 Chromatic device and 1 GoWin FPGA interface.{COLOR_RESET}");
+    }
     Ok(true)
 }
 
