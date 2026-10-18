@@ -1,3 +1,5 @@
 /.idea/
 /target/
 /chromatic-ez-firmware-downloads/
+/dist/
+third-party-notices.html
