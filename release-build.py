@@ -3,13 +3,17 @@ import shutil
 import subprocess
 import sys
 import zipfile
+import tomllib
 from pathlib import Path
 
 # Configuration
-APP_NAME = "chromatic-ez-firmware"
+ROOT_DIR = Path.cwd()
+CARGO_TOML = ROOT_DIR / "Cargo.toml"
+CARGO_DATA = tomllib.loads(CARGO_TOML.read_text())
+APP_NAME = CARGO_DATA["package"]["name"]
+VERSION = CARGO_DATA["package"]["version"]
 RELEASE_DIR = Path("target/release")
 OUTPUT_ZIP_DIR = Path("dist")
-
 
 def run_command(cmd, shell=False):
     """Utility function to run a command and raise on failure."""
@@ -21,7 +25,6 @@ def exe_name(stem):
 
 
 def main():
-    root_dir = Path.cwd()
 
     # 1. Build for release
     print("Building project for release...")
@@ -29,7 +32,7 @@ def main():
 
     # 2. Build third-party-notices.html using cargo about
     print("Generating third-party-notices.html...")
-    notice_file = root_dir / "third-party-notices.html"
+    notice_file = ROOT_DIR / "third-party-notices.html"
     run_command(
         ["cargo", "about", "generate", "about.hbs", "-o", str(notice_file)]
     )
@@ -69,10 +72,11 @@ def main():
 
     # 4. Create ZIP package
     OUTPUT_ZIP_DIR.mkdir(exist_ok=True)
-    zip_path = OUTPUT_ZIP_DIR / f"{APP_NAME}.zip"
+    zip_platform = "win64" if sys.platform == "win32" else "macOS-arm64"
+    zip_path = OUTPUT_ZIP_DIR / f"{APP_NAME}-v{VERSION}-{zip_platform}.zip"
 
     files_to_zip = [
-        (root_dir / "COPYING", "COPYING"),
+        (ROOT_DIR / "COPYING", "COPYING"),
         (notice_file, "third-party-notices.html"),
     ]
     files_to_zip.extend([(p, p.name) for p in exe_paths])
