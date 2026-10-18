@@ -139,7 +139,7 @@ impl eframe::App for GuiApp {
                             Ok(()) => {
                                 self.current_status = "Firmware change completed!".to_string();
                                 self.current_progress = 1.0;
-                                self.logs.push("[SUCCESS] Process finished completely.".to_string());
+                                self.logs.push("[SUCCESS] Unplug and turn off your Chromatic, take out the batteries, wait a few minutes, then turn it on again.".to_string());
                             }
                             Err(e) => {
                                 self.current_status = format!("Error: {}", e);
