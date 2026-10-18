@@ -4,6 +4,13 @@ title = "fredemmott/chromatic-flashgbx-fpga"
 description = "ModRetro's firmware, modified to support FlashGBX."
 
 [[firmware.versions]]
+version = "v2026.10.06.00 (based on ModRetro v4.6)"
+fpga_url = "https://github.com/fredemmott/chromatic-flashgbx-fpga/releases/download/fredemmott-v2026.10.06.00/fredemmott-v2026.10.06.00.fs"
+fpga_sha256 = "a4a0158744c58016f3b4539ff01768a75bd810c1d2a7f0fbcfba528ec0c94ab2"
+mcu_url = "ref://modretro/v4.6"
+mcu_sha256 = "ref://modretro/v4.6"
+
+[[firmware.versions]]
 version = "v2026.09.27.0 (based on ModRetro v4.2)"
 fpga_url = "https://github.com/fredemmott/chromatic_dumper/releases/download/dumper-v2026.09.27.00/evt1_x2.fs"
 fpga_sha256 = "d4dd06ef87e2581b813cd556c4809ae7d4a44ab1842487a46f7cb56d427d67f3"
