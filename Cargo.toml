@@ -1,6 +1,6 @@
 [package]
 name = "chromatic-ez-firmware"
-version = "0.1.0"
+version = "1.20261018.0"
 edition = "2024"
 license = "BSL-1.0"
 authors = ["Fred Emmott <fred@fredemmott.com>"]

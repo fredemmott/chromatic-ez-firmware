@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "chromatic-ez-firmware"
-version = "0.1.0"
+version = "1.20261018.0"
 dependencies = [
  "anyhow",
  "clap",
